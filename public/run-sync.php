@@ -9,8 +9,10 @@ require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/PcoClient.php';
 require_once __DIR__ . '/../src/SyncService.php';
 require_once __DIR__ . '/../src/QboClient.php';
+require_once __DIR__ . '/../src/SyncLogger.php';
 require_once __DIR__ . '/../src/Auth.php';
 Auth::requireLogin();
+
 function get_setting(PDO $pdo, string $key): ?string
 {
     $stmt = $pdo->prepare('SELECT setting_value FROM sync_settings WHERE setting_key = :key ORDER BY id DESC LIMIT 1');
@@ -35,14 +37,16 @@ function set_setting(PDO $pdo, string $key, string $value): void
     ]);
 }
 
-// --- Bootstrap DB / clients --------------------------------------------------
+// -----------------------------------------------------------------------------
+// Bootstrap DB + clients
+// -----------------------------------------------------------------------------
 
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
 } catch (Throwable $e) {
     http_response_code(500);
-    echo '<h1>Sync error</h1>';
+    echo '<h1>Database error</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
     exit;
 }
@@ -88,8 +92,34 @@ if ($lastSyncStr) {
 // Build preview (fund-level totals) for this window
 $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
 
+// Prepare logging (best-effort)
+$donationsCount = isset($preview['donations_count']) ? (int)$preview['donations_count'] : 0;
+$depositsCount  = 0;
+$logId          = null;
+
+try {
+    $logId = SyncLogger::start($pdo, $sinceUtc, $nowUtc);
+} catch (Throwable $e) {
+    // Ignore logging failures; sync should still proceed
+    $logId = null;
+}
+
 // If nothing to sync, just advance last_completed_at and exit.
 if (empty($preview['funds'])) {
+    if ($logId !== null) {
+        try {
+            SyncLogger::finish(
+                $pdo,
+                $logId,
+                'success',
+                $donationsCount,
+                0,
+                'No eligible Stripe donations in this window.'
+            );
+        } catch (Throwable $e) {
+            // Ignore logging errors in "no data" case
+        }
+    }
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
     ?>
 <!DOCTYPE html>
@@ -132,20 +162,25 @@ $createdDeposits = [];
 
 try {
     // Bank account by simple name
-    $bankAccount = $qbo->getAccountByName($depositBankName, false);
+    $bankAccount = $qbo->getAccountByName($depositBankName, 'Bank');
     if (!$bankAccount) {
-        $errors[] = "Could not find deposit bank account in QBO: {$depositBankName}";
+        $errors[] = 'Could not find QBO bank account named "' . $depositBankName . '"';
     }
 
-    // Income & fee accounts by fully-qualified name
-    $incomeAccount = $qbo->getAccountByName($incomeAccountName, true);
+    // Income account
+    $incomeAccount = $qbo->getAccountByName($incomeAccountName, 'Income');
     if (!$incomeAccount) {
-        $errors[] = "Could not find income account in QBO: {$incomeAccountName}";
+        $errors[] = 'Could not find QBO income account named "' . $incomeAccountName . '"';
     }
 
-    $feeAccount = $qbo->getAccountByName($stripeFeeAccountName, true);
+    // Stripe fee expense account
+    $feeAccount = $qbo->getAccountByName($stripeFeeAccountName, 'Expense');
     if (!$feeAccount) {
-        $errors[] = "Could not find Stripe fee account in QBO: {$stripeFeeAccountName}";
+        $errors[] = 'Could not find QBO expense account named "' . $stripeFeeAccountName . '"';
+    }
+
+    if (!empty($errors)) {
+        throw new RuntimeException('One or more required QBO accounts are missing.');
     }
 } catch (Throwable $e) {
     $errors[] = 'Error looking up QBO accounts: ' . $e->getMessage();
@@ -182,26 +217,9 @@ if (empty($errors)) {
     foreach ($locationGroups as $locKey => $group) {
         $locName = $group['location_name'];
 
-        // Look up QBO Department (Location) if one is mapped
-        $deptRef = null;
-        if ($locName !== '') {
-            try {
-                $deptObj = $qbo->getDepartmentByName($locName);
-                if (!$deptObj) {
-                    $errors[] = "Could not find QBO Location (Department) for '{$locName}'.";
-                    continue;
-                }
-                $deptRef = [
-                    'value' => (string)$deptObj['Id'],
-                ];
-            } catch (Throwable $e) {
-                $errors[] = "Error looking up Location '{$locName}': " . $e->getMessage();
-                continue;
-            }
-        }
-
         $lines = [];
 
+        // Add fund lines (gross and fee) for each PCO fund in this Location
         foreach ($group['funds'] as $fundRow) {
             $fundName  = $fundRow['pco_fund_name'];
             $className = $fundRow['qbo_class_name'];
@@ -235,7 +253,7 @@ if (empty($errors)) {
                             'name'  => $incomeAccount['Name'] ?? $incomeAccountName,
                         ],
                     ],
-                    'Description' => $fundName . ' gross donations',
+                    'Description' => $fundName . ' gross giving',
                 ];
                 if ($classId) {
                     $line['DepositLineDetail']['ClassRef'] = [
@@ -245,11 +263,11 @@ if (empty($errors)) {
                 $lines[] = $line;
             }
 
-            // Fee line (Stripe fees, negative amount)
+            // Stripe fee line (negative amount)
             $fee = round((float)$fundRow['fee'], 2);
-            if ($fee > 0) {
+            if ($fee != 0.0) {
                 $feeLine = [
-                    'Amount'     => -$fee,   // negative to reduce deposit
+                    'Amount'     => $fee,
                     'DetailType' => 'DepositLineDetail',
                     'DepositLineDetail' => [
                         'AccountRef' => [
@@ -287,23 +305,37 @@ if (empty($errors)) {
             'Line' => $lines,
         ];
 
-        // One DepartmentRef (Location) per Deposit, per QBO rules
-        if ($deptRef !== null) {
-            $deposit['DepartmentRef'] = $deptRef;
+        // Attach LocationRef at the Txn level if we have a Location
+        if ($locName) {
+            try {
+                $locObj = $qbo->getLocationByName($locName);
+                if (!$locObj) {
+                    $errors[] = 'Could not find QBO Location named "' . $locName . '"';
+                    // We still create the deposit without a Location, but record the error
+                } else {
+                    $deposit['TxnLocationRef'] = [
+                        'value' => (string)$locObj['Id'],
+                        'name'  => $locObj['Name'] ?? $locName,
+                    ];
+                }
+            } catch (Throwable $e) {
+                $errors[] = 'Error looking up QBO Location "' . $locName . '": ' . $e->getMessage();
+            }
         }
 
+        // Send to QBO, handling any API errors but continuing other Locations
         try {
-            $resp = $qbo->createDeposit($deposit);
-            $dep  = $resp['Deposit'] ?? null;
+            $created = $qbo->createDeposit($deposit);
             $createdDeposits[] = [
-                'location_name' => $locName,
-                'total_gross'   => $group['total_gross'],
-                'total_fee'     => $group['total_fee'],
-                'total_net'     => $group['total_net'],
-                'deposit'       => $dep,
+                'location'      => $locName,
+                'TotalAmt'      => $created['TotalAmt'] ?? null,
+                'DocNumber'     => $created['DocNumber'] ?? null,
+                'TxnDate'       => $created['TxnDate'] ?? null,
+                'qbo_deposit'   => $created,
+                'group_totals'  => $group,
             ];
         } catch (Throwable $e) {
-            $errors[] = 'Error creating QBO Deposit for Location ' . ($locName ?: '(no location)') . ': ' . $e->getMessage();
+            $errors[] = 'Error creating QBO Deposit for Location "' . ($locName ?: '(no location)') . '": ' . $e->getMessage();
         }
     }
 }
@@ -311,6 +343,26 @@ if (empty($errors)) {
 // Only move the sync window forward if everything succeeded
 if (empty($errors) && !empty($createdDeposits)) {
     set_setting($pdo, 'last_completed_at', $preview['until']->format(DateTimeInterface::ATOM));
+}
+
+$depositsCount = count($createdDeposits);
+
+if ($logId !== null) {
+    $status  = !empty($errors) ? 'error' : 'success';
+    $message = !empty($errors) ? implode("\n", $errors) : null;
+
+    try {
+        SyncLogger::finish(
+            $pdo,
+            $logId,
+            $status,
+            $donationsCount,
+            $depositsCount,
+            $message
+        );
+    } catch (Throwable $e) {
+        // Ignore logging failures; sync result page will still show details
+    }
 }
 
 ?>
@@ -340,58 +392,42 @@ if (empty($errors) && !empty($createdDeposits)) {
                 <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
             <?php endforeach; ?>
         </ul>
-        <?php if (!empty($createdDeposits)): ?>
-            <p class="muted">
-                Some deposits may have been created in QuickBooks before the errors occurred.
-                Review QBO and adjust the <code>last_completed_at</code> setting if you need to rerun this window.
-            </p>
-        <?php endif; ?>
     </div>
 <?php else: ?>
-    <?php if (!empty($createdDeposits)): ?>
-        <div class="ok">
-            <strong><?= count($createdDeposits) ?> deposit(s) created in QuickBooks.</strong>
-        </div>
-    <?php else: ?>
-        <div class="ok">
-            <strong>No deposits were created.</strong>
-        </div>
-    <?php endif; ?>
+    <div class="ok">
+        Sync completed successfully.
+    </div>
 <?php endif; ?>
 
-<h2>Window used</h2>
-<p class="muted">
-    Completed_at from
-    <strong><?= htmlspecialchars($preview['since']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></strong>
-    to
-    <strong><?= htmlspecialchars($preview['until']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></strong>
-</p>
-
 <?php if (!empty($createdDeposits)): ?>
-    <h2>Deposits by Location</h2>
+    <h2>Created Deposits</h2>
     <table>
         <thead>
         <tr>
             <th>Location</th>
-            <th>QBO Deposit Id</th>
             <th>TxnDate</th>
-            <th>QBO Total</th>
-            <th>Gross</th>
-            <th>Fees</th>
-            <th>Net</th>
+            <th>DocNumber</th>
+            <th>QBO TotalAmt</th>
+            <th>Group Gross</th>
+            <th>Group Stripe Fees</th>
+            <th>Group Net</th>
         </tr>
         </thead>
         <tbody>
         <?php foreach ($createdDeposits as $cd): ?>
-            <?php $dep = $cd['deposit'] ?? []; ?>
+            <?php
+            $loc = $cd['location'] ?: '(no location)';
+            $dep = $cd['qbo_deposit'] ?? [];
+            $group = $cd['group_totals'] ?? [];
+            ?>
             <tr>
-                <td><?= htmlspecialchars($cd['location_name'] ?: '(no location)', ENT_QUOTES, 'UTF-8') ?></td>
-                <td><?= htmlspecialchars((string)($dep['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                <td><?= htmlspecialchars($loc, ENT_QUOTES, 'UTF-8') ?></td>
                 <td><?= htmlspecialchars((string)($dep['TxnDate'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                <td><?= htmlspecialchars((string)($dep['DocNumber'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
                 <td>$<?= htmlspecialchars((string)($dep['TotalAmt'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
-                <td>$<?= number_format($cd['total_gross'], 2) ?></td>
-                <td>$<?= number_format($cd['total_fee'], 2) ?></td>
-                <td>$<?= number_format($cd['total_net'], 2) ?></td>
+                <td>$<?= number_format($group['total_gross'], 2) ?></td>
+                <td>$<?= number_format($group['total_fee'], 2) ?></td>
+                <td>$<?= number_format($group['total_net'], 2) ?></td>
             </tr>
         <?php endforeach; ?>
         </tbody>

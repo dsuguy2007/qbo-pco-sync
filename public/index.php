@@ -227,6 +227,8 @@ try {
 <p><a href="run-sync.php">Run sync to QuickBooks now</a></p>
 <p></p>
 <p><a href="logout.php">Log out</a></p>
+<p><a href="logs.php">View recent sync logs</a></p>
+
 
 <p class="small" style="margin-top:1.5rem;">
     This dashboard will eventually let you:
