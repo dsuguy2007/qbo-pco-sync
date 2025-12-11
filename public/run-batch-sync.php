@@ -6,6 +6,7 @@ $config = require __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/QboClient.php';
 require_once __DIR__ . '/../src/Auth.php';
+require_once __DIR__ . '/../src/SyncLogger.php';
 
 Auth::requireLogin();
 
@@ -213,7 +214,7 @@ function get_batch_donations(array $pcoConfig, string $batchId): array
 }
 
 // ---------------------------------------------------------------------------
-// Bootstrap DB / clients
+// Bootstrap DB / clients / logger
 // ---------------------------------------------------------------------------
 
 try {
@@ -226,17 +227,37 @@ try {
     exit;
 }
 
+$logger = new SyncLogger($pdo);
+$logId  = $logger->start('batch');
+
 $pcoConfig = $config['pco'] ?? [];
 if (empty($pcoConfig['app_id']) || empty($pcoConfig['secret'])) {
+    $logger->finish(
+        $logId,
+        'error',
+        'PCO credentials not configured (batch sync).',
+        'Missing pco.app_id or pco.secret in config.php.'
+    );
     http_response_code(500);
     echo '<h1>PCO client error</h1>';
     echo '<p>PCO credentials are not configured. Please set pco.app_id and pco.secret in config.php.</p>';
     exit;
 }
 
+$errors          = [];
+$createdDeposits = [];
+$totalDonations  = 0;
+
 try {
     $qbo = new QboClient($pdo, $config);
 } catch (Throwable $e) {
+    $errors[] = 'Error creating QBO client: ' . $e->getMessage();
+    $logger->finish(
+        $logId,
+        'error',
+        'Failed to create QBO client (batch sync).',
+        $errors[0]
+    );
     http_response_code(500);
     echo '<h1>QBO client error</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
@@ -249,6 +270,12 @@ try {
 
 $enableBatchSync = get_setting($pdo, 'enable_batch_sync') ?? '0';
 if ($enableBatchSync !== '1') {
+    $logger->finish(
+        $logId,
+        'success',
+        'Batch sync run requested but is disabled in settings.',
+        null
+    );
     ?>
     <!DOCTYPE html>
     <html lang="en">
@@ -289,6 +316,10 @@ if ($lastBatchStr) {
 } else {
     // First ever batch-sync run: initialize window and exit (no backfill).
     set_setting($pdo, 'last_batch_sync_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+
+    $summary = 'Initial batch sync run: window initialized, no batches processed.';
+    $logger->finish($logId, 'success', $summary, null);
+
     ?>
     <!DOCTYPE html>
     <html lang="en">
@@ -325,10 +356,6 @@ $depositBankName = get_setting($pdo, 'deposit_bank_account_name')
 $incomeAccountName = get_setting($pdo, 'income_account_name')
     ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
 
-$errors          = [];
-$createdDeposits = [];
-$totalDonations  = 0;
-
 try {
     // Bank account – match by simple Name
     $bankAccount = $qbo->getAccountByName($depositBankName, false);
@@ -360,8 +387,11 @@ try {
     $errors[] = 'Error loading fund mappings: ' . $e->getMessage();
 }
 
-// If we already have fatal errors, stop before hitting external APIs further
-if (!empty($errors)) {
+// If we already have fatal config errors, stop before PCO calls
+if (!empty($errors) && (empty($bankAccount) || empty($incomeAccount))) {
+    $details = implode("\n", $errors);
+    $logger->finish($logId, 'error', 'Batch sync configuration error.', $details);
+
     ?>
     <!DOCTYPE html>
     <html lang="en">
@@ -371,7 +401,6 @@ if (!empty($errors)) {
         <style>
             body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
             .error { padding: 0.75rem 1rem; background: #fee; border: 1px solid #f99; margin-bottom: 1rem; }
-            .muted { font-size: 0.9rem; color: #666; }
         </style>
     </head>
     <body>
@@ -603,6 +632,24 @@ foreach ($batches as $batchInfo) {
 
 // Move the batch sync window forward to the end of this run
 set_setting($pdo, 'last_batch_sync_completed_at', $windowEnd->format(DateTimeInterface::ATOM));
+
+// Determine log status
+if (empty($errors)) {
+    $status = 'success';
+} elseif (!empty($createdDeposits)) {
+    $status = 'partial';
+} else {
+    $status = 'error';
+}
+
+$summary = sprintf(
+    'Batch: processed %d donations; created %d deposits.',
+    (int)$totalDonations,
+    count($createdDeposits)
+);
+$details = empty($errors) ? null : implode("\n", $errors);
+
+$logger->finish($logId, $status, $summary, $details);
 
 ?>
 <!DOCTYPE html>
