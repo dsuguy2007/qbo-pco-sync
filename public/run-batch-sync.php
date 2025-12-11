@@ -7,6 +7,7 @@ require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/QboClient.php';
 require_once __DIR__ . '/../src/Auth.php';
 require_once __DIR__ . '/../src/SyncLogger.php';
+require_once __DIR__ . '/../src/Mailer.php'; 
 
 Auth::requireLogin();
 
@@ -650,6 +651,27 @@ $summary = sprintf(
 $details = empty($errors) ? null : implode("\n", $errors);
 
 $logger->finish($logId, $status, $summary, $details);
+// Send email notification on error or partial status
+$notificationEmail = get_setting($pdo, 'notification_email');
+if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
+    $from   = $config['mail']['from'] ?? null;
+    $mailer = new Mailer($from);
+
+    $subject = '[PCO→QBO] Batch sync ' . strtoupper($status);
+    $bodyLines = [
+        'Batch sync run on ' . $nowUtc->format('Y-m-d H:i:s T'),
+        '',
+        'Status: ' . $status,
+        $summary,
+    ];
+    if (!empty($details)) {
+        $bodyLines[] = '';
+        $bodyLines[] = 'Details:';
+        $bodyLines[] = $details;
+    }
+
+    $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
+}
 
 ?>
 <!DOCTYPE html>
