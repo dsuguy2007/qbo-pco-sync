@@ -1,0 +1,17 @@
+# Local config with real secrets (never commit)
+config/config.php
+
+# If you ever install dependencies via Composer
+vendor/
+
+# Logs / temp files
+logs/
+*.log
+
+# IDE/editor cruft
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
