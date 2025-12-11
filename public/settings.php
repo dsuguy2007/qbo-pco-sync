@@ -1,12 +1,26 @@
 <?php
 declare(strict_types=1);
 
-
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
+error_reporting(E_ALL);
 
 $config = require __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/Auth.php';
+
 Auth::requireLogin();
+
+try {
+    $db  = Db::getInstance($config['db']);
+    $pdo = $db->getConnection();
+} catch (Throwable $e) {
+    http_response_code(500);
+    echo '<h1>Database error</h1>';
+    echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
+    exit;
+}
+
 function get_setting(PDO $pdo, string $key): ?string
 {
     $stmt = $pdo->prepare('SELECT setting_value FROM sync_settings WHERE setting_key = :key ORDER BY id DESC LIMIT 1');
@@ -20,7 +34,7 @@ function get_setting(PDO $pdo, string $key): ?string
 
 function set_setting(PDO $pdo, string $key, string $value): void
 {
-    // ensure one row per key
+    // Ensure only one row per key
     $stmt = $pdo->prepare('DELETE FROM sync_settings WHERE setting_key = :key');
     $stmt->execute([':key' => $key]);
 
@@ -31,75 +45,55 @@ function set_setting(PDO $pdo, string $key, string $value): void
     ]);
 }
 
-try {
-    $db  = Db::getInstance($config['db']);
-    $pdo = $db->getConnection();
-} catch (Throwable $e) {
-    http_response_code(500);
-    echo '<h1>Settings error</h1>';
-    echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
-    exit;
-}
+$errors  = [];
+$success = false;
 
-// Defaults if nothing in DB
-$defaults = [
-    'notification_email'        => '',
-    'deposit_bank_account_name' => 'TRINITY 2000 CHECKING',
-    'income_account_name'       => 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES',
-    'stripe_fee_account_name'   => 'OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES',
-];
-
-$saved = false;
-$errors = [];
-
-// Handle POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $notificationEmail = trim($_POST['notification_email'] ?? '');
-    $depositBank       = trim($_POST['deposit_bank_account_name'] ?? '');
-    $incomeAccount     = trim($_POST['income_account_name'] ?? '');
-    $stripeFeeAccount  = trim($_POST['stripe_fee_account_name'] ?? '');
+    $notificationEmail      = trim($_POST['notification_email'] ?? '');
+    $depositBankAccountName = trim($_POST['deposit_bank_account_name'] ?? '');
+    $incomeAccountName      = trim($_POST['income_account_name'] ?? '');
+    $stripeFeeAccountName   = trim($_POST['stripe_fee_account_name'] ?? '');
+    $enableBatchSync        = isset($_POST['enable_batch_sync']) ? '1' : '0';
 
-    // basic validation
+    // Basic validation
     if ($notificationEmail !== '' && !filter_var($notificationEmail, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'Notification email is not a valid email address.';
     }
-    if ($depositBank === '') {
+
+    if ($depositBankAccountName === '') {
         $errors[] = 'Deposit bank account name is required.';
     }
-    if ($incomeAccount === '') {
+
+    if ($incomeAccountName === '') {
         $errors[] = 'Income account name is required.';
     }
-    if ($stripeFeeAccount === '') {
-        $errors[] = 'Stripe fee account name is required.';
+
+    if ($stripeFeeAccountName === '') {
+        $errors[] = 'Stripe fee expense account name is required.';
     }
 
     if (empty($errors)) {
         try {
             set_setting($pdo, 'notification_email', $notificationEmail);
-            set_setting($pdo, 'deposit_bank_account_name', $depositBank);
-            set_setting($pdo, 'income_account_name', $incomeAccount);
-            set_setting($pdo, 'stripe_fee_account_name', $stripeFeeAccount);
-            $saved = true;
+            set_setting($pdo, 'deposit_bank_account_name', $depositBankAccountName);
+            set_setting($pdo, 'income_account_name', $incomeAccountName);
+            set_setting($pdo, 'stripe_fee_account_name', $stripeFeeAccountName);
+            set_setting($pdo, 'enable_batch_sync', $enableBatchSync);
+
+            $success = true;
         } catch (Throwable $e) {
             $errors[] = 'Error saving settings: ' . $e->getMessage();
         }
     }
-
-    // repopulate from POST if there were errors
-    $current = [
-        'notification_email'        => $notificationEmail,
-        'deposit_bank_account_name' => $depositBank,
-        'income_account_name'       => $incomeAccount,
-        'stripe_fee_account_name'   => $stripeFeeAccount,
-    ];
-} else {
-    // GET: load from DB or defaults
-    $current = [];
-    foreach ($defaults as $key => $def) {
-        $val = get_setting($pdo, $key);
-        $current[$key] = $val !== null ? $val : $def;
-    }
 }
+
+// Load current values (with sensible defaults)
+$notificationEmail      = get_setting($pdo, 'notification_email') ?? '';
+$depositBankAccountName = get_setting($pdo, 'deposit_bank_account_name') ?? 'TRINITY 2000 CHECKING';
+$incomeAccountName      = get_setting($pdo, 'income_account_name') ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
+$stripeFeeAccountName   = get_setting($pdo, 'stripe_fee_account_name') ?? 'OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES';
+$enableBatchSync        = get_setting($pdo, 'enable_batch_sync') ?? '0';
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -107,136 +101,134 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <title>Sync Settings</title>
     <style>
-        body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            margin: 2rem;
-        }
-        h1 {
-            margin-bottom: 1rem;
-        }
-        .ok {
-            padding: 0.6rem 0.8rem;
-            background: #e6ffed;
-            border: 1px solid #b7eb8f;
-            margin-bottom: 1rem;
-        }
-        .error {
-            padding: 0.6rem 0.8rem;
-            background: #ffecec;
-            border: 1px solid #ffaeae;
-            margin-bottom: 1rem;
-        }
-        label {
-            font-weight: 600;
-            display: block;
-            margin-top: 1rem;
-        }
-        input[type="text"],
-        input[type="email"] {
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
+        h1 { margin-bottom: 0.5rem; }
+        .muted { font-size: 0.85rem; color: #666; }
+        .box { max-width: 700px; }
+        label { display: block; margin-top: 1rem; font-weight: 600; }
+        input[type="text"], input[type="email"] {
             width: 100%;
             max-width: 500px;
             padding: 0.4rem 0.5rem;
             border: 1px solid #ccc;
             border-radius: 4px;
-            font-size: 0.95rem;
         }
-        .help {
-            font-size: 0.85rem;
-            color: #666;
-        }
+        .checkbox-row { margin-top: 1rem; }
+        .checkbox-row label { display: inline-block; font-weight: 400; margin-left: 0.3rem; }
         button {
             margin-top: 1.5rem;
-            padding: 0.5rem 0.9rem;
+            padding: 0.4rem 0.9rem;
+            border-radius: 4px;
+            border: none;
             background: #1677ff;
             color: #fff;
-            border: none;
-            border-radius: 4px;
-            font-size: 0.95rem;
             cursor: pointer;
         }
-        button:hover {
-            background: #0b5ed7;
-        }
-        a {
-            color: #1677ff;
-        }
+        button:hover { background: #0b5ed7; }
+        .ok { padding: 0.6rem 0.8rem; background: #e6ffed; border: 1px solid #b7eb8f; margin-bottom: 1rem; }
+        .error { padding: 0.6rem 0.8rem; background: #ffecec; border: 1px solid #ffaeae; margin-bottom: 1rem; }
+        ul { margin: 0.4rem 0 0 1.2rem; }
+        a { color: #1677ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
+<div class="box">
+    <h1>Sync Settings</h1>
+    <p class="muted"><a href="index.php">&larr; Back to dashboard</a></p>
 
-<h1>Sync Settings</h1>
+    <?php if ($success): ?>
+        <div class="ok">Settings saved.</div>
+    <?php endif; ?>
 
-<?php if ($saved && empty($errors)): ?>
-    <div class="ok">
-        Settings saved successfully.
-    </div>
-<?php endif; ?>
+    <?php if (!empty($errors)): ?>
+        <div class="error">
+            <strong>There were problems saving your settings:</strong>
+            <ul>
+                <?php foreach ($errors as $err): ?>
+                    <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
+    <?php endif; ?>
 
-<?php if (!empty($errors)): ?>
-    <div class="error">
-        <strong>There were problems saving your settings:</strong>
-        <ul>
-            <?php foreach ($errors as $err): ?>
-                <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
-            <?php endforeach; ?>
-        </ul>
-    </div>
-<?php endif; ?>
+    <form method="post" action="settings.php">
+        <h2>QuickBooks Accounts</h2>
 
-<form method="post" action="settings.php" novalidate>
-    <label for="notification_email">Notification email</label>
-    <input
-        type="email"
-        id="notification_email"
-        name="notification_email"
-        value="<?= htmlspecialchars($current['notification_email'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-        placeholder="you@example.com"
-    />
-    <div class="help">
-        If set, sync errors can be emailed here (feature to be added next). Leave blank to disable email notifications.
-    </div>
+        <label for="deposit_bank_account_name">Deposit bank account name (QBO)</label>
+        <input
+            id="deposit_bank_account_name"
+            name="deposit_bank_account_name"
+            type="text"
+            value="<?= htmlspecialchars($depositBankAccountName, ENT_QUOTES, 'UTF-8') ?>"
+            required
+        >
+        <p class="muted">
+            This should match the <strong>Bank</strong> account name in QuickBooks where deposits are recorded
+            (e.g. <code>TRINITY 2000 CHECKING</code>).
+        </p>
 
-    <label for="deposit_bank_account_name">Deposit bank account name (QBO)</label>
-    <input
-        type="text"
-        id="deposit_bank_account_name"
-        name="deposit_bank_account_name"
-        value="<?= htmlspecialchars($current['deposit_bank_account_name'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-    />
-    <div class="help">
-        Name of the bank account in QBO to receive deposits (e.g. <code>TRINITY 2000 CHECKING</code>).
-    </div>
+        <label for="income_account_name">Income account name (QBO)</label>
+        <input
+            id="income_account_name"
+            name="income_account_name"
+            type="text"
+            value="<?= htmlspecialchars($incomeAccountName, ENT_QUOTES, 'UTF-8') ?>"
+            required
+        >
+        <p class="muted">
+            Used for the gross donation lines (e.g. <code>OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES</code>).
+        </p>
 
-    <label for="income_account_name">Income account fully-qualified name (QBO)</label>
-    <input
-        type="text"
-        id="income_account_name"
-        name="income_account_name"
-        value="<?= htmlspecialchars($current['income_account_name'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-    />
-    <div class="help">
-        Fully-qualified name of the income account for donations, including parents, e.g.
-        <code>OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES</code>.
-    </div>
+        <label for="stripe_fee_account_name">Stripe fee expense account name (QBO)</label>
+        <input
+            id="stripe_fee_account_name"
+            name="stripe_fee_account_name"
+            type="text"
+            value="<?= htmlspecialchars($stripeFeeAccountName, ENT_QUOTES, 'UTF-8') ?>"
+            required
+        >
+        <p class="muted">
+            Used for the negative Stripe fee lines (e.g. <code>OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES</code>).
+        </p>
 
-    <label for="stripe_fee_account_name">Stripe fee account fully-qualified name (QBO)</label>
-    <input
-        type="text"
-        id="stripe_fee_account_name"
-        name="stripe_fee_account_name"
-        value="<?= htmlspecialchars($current['stripe_fee_account_name'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
-    />
-    <div class="help">
-        Fully-qualified name of the expense account for Stripe fees, e.g.
-        <code>OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES</code>.
-    </div>
+        <h2>Notifications</h2>
 
-    <button type="submit">Save settings</button>
-</form>
+        <label for="notification_email">Notification email</label>
+        <input
+            id="notification_email"
+            name="notification_email"
+            type="email"
+            value="<?= htmlspecialchars($notificationEmail, ENT_QUOTES, 'UTF-8') ?>"
+            placeholder="you@example.org"
+        >
+        <p class="muted">
+            If set, the app will send an email when a sync run ends with errors.
+        </p>
 
-<p style="margin-top:1.5rem;">
-    <a href="index.php">&larr; Back to dashboard</a>
-</p>
+        <h2>Batch Sync (Checks & Cash)</h2>
 
+        <div class="checkbox-row">
+            <input
+                id="enable_batch_sync"
+                name="enable_batch_sync"
+                type="checkbox"
+                value="1"
+                <?= $enableBatchSync === '1' ? 'checked' : '' ?>
+            >
+            <label for="enable_batch_sync">
+                Enable syncing committed PCO batches (cash & checks) to QuickBooks
+            </label>
+        </div>
+        <p class="muted">
+            When enabled, the app will (in a later step) be able to sync <strong>committed batches</strong>
+            from PCO Giving into QBO Deposits.  
+            Each batch will be turned into one or more QBO Deposit records, with the
+            <strong>Batch ID</strong> included in the memo.
+        </p>
+
+        <button type="submit">Save settings</button>
+    </form>
+</div>
 </body>
 </html>
