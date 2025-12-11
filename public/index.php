@@ -225,6 +225,8 @@ try {
 <p><a href="fund-mapping.php">Manage Fund &rarr; QBO Class/Location mappings</a></p>
 <p><a href="run-sync-preview.php">Preview Stripe donations (completed_at filter)</a></p>
 <p><a href="run-sync.php">Run sync to QuickBooks now</a></p>
+<p><a href="run-batch-sync.php">Run committed batch sync now</a></p>
+
 <p></p>
 <p><a href="logout.php">Log out</a></p>
 <p><a href="logs.php">View recent sync logs</a></p>
