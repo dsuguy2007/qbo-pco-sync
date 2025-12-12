@@ -150,6 +150,15 @@ foreach ($sampleStrings as $needle) {
     }
 }
 
+// Sync health alerts
+$healthAlerts = [];
+foreach (['stripe' => 'Stripe donations', 'batch' => 'Committed batches', 'registrations' => 'Registrations payments'] as $k => $label) {
+    $s = $syncSummaries[$k] ?? null;
+    if ($s && isset($s['status']) && in_array($s['status'], ['error', 'partial'], true)) {
+        $healthAlerts[] = $label . ' last run status: ' . strtoupper((string)$s['status']);
+    }
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -475,6 +484,17 @@ foreach ($sampleStrings as $needle) {
                 </ul>
             </div>
         <?php endif; ?>
+        <?php if (!empty($healthAlerts)): ?>
+            <div class="card" style="border:1px solid rgba(255,122,122,0.35); background: rgba(255,122,122,0.08);">
+                <p class="section-title" style="margin:0;">Sync alerts</p>
+                <ul>
+                    <?php foreach ($healthAlerts as $w): ?>
+                        <li><?= htmlspecialchars($w, ENT_QUOTES, 'UTF-8') ?></li>
+                    <?php endforeach; ?>
+                </ul>
+                <p class="muted" style="margin-top:0.5rem;">Check sync logs or rerun the affected sync.</p>
+            </div>
+        <?php endif; ?>
 
         <div class="card section">
             <div class="section-header">
@@ -597,6 +617,7 @@ foreach ($sampleStrings as $needle) {
                 <a href="logout.php">Log out</a>
                 <a href="test-pco.php">Test PCO connection</a>
                 <a href="self-check.php">System self-check</a>
+                <a href="logs-diagnostics.php">Diagnostics logs</a>
             </div>
         </div>
 
