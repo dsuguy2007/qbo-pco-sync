@@ -28,6 +28,19 @@ if (!$webhookSecretValid) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+function map_payment_method_name(?string $raw): ?string
+{
+    if ($raw === null) { return null; }
+    $m = strtolower(trim($raw));
+    if ($m === '') { return null; }
+    if (in_array($m, ['card', 'credit_card', 'credit card'], true)) { return 'Credit Card'; }
+    if ($m === 'ach') { return 'ACH'; }
+    if ($m === 'eft') { return 'EFT'; }
+    if ($m === 'cash') { return 'cash'; }
+    if (in_array($m, ['check', 'cheque'], true)) { return 'check'; }
+    return null;
+}
+
 function renderLayout(string $title, string $heroTitle, string $lede, string $content): void
 {
     ?>
@@ -492,6 +505,7 @@ function get_batch_donations(array $pcoConfig, string $batchId): array
             'id'           => $id,
             'received_at'  => $attrs['received_at'] ?? null,
             'amount_cents' => (int)($attrs['amount_cents'] ?? 0),
+            'payment_method'=> $paymentMethod,
             'designations' => $designations,
         ];
     }
@@ -726,7 +740,8 @@ foreach ($batches as $batchInfo) {
 
     foreach ($donations as $donation) {
         $totalDonations++;
-        $designations = $donation['designations'] ?? [];
+        $designations    = $donation['designations'] ?? [];
+        $paymentMethod   = $donation['payment_method'] ?? '';
 
         foreach ($designations as $des) {
             $fundId      = (string)($des['fund_id'] ?? '');
@@ -767,11 +782,15 @@ foreach ($batches as $batchInfo) {
                     'pco_fund_name'  => $fundName,
                     'qbo_class_name' => $className,
                     'gross'          => 0.0,
+                    'payment_methods'=> [],
                 ];
             }
 
             $locationGroups[$locKey]['funds'][$fundId]['gross'] += $amount;
             $locationGroups[$locKey]['total_gross']             += $amount;
+            if ($paymentMethod !== '') {
+                $locationGroups[$locKey]['funds'][$fundId]['payment_methods'][$paymentMethod] = true;
+            }
         }
     }
 
@@ -810,6 +829,7 @@ foreach ($batches as $batchInfo) {
         foreach ($funds as $fundRow) {
             $fundName  = $fundRow['pco_fund_name'];
             $className = $fundRow['qbo_class_name'];
+            $paymentMethods = $fundRow['payment_methods'] ?? [];
 
             $classId = null;
             if ($className !== '') {
@@ -842,6 +862,19 @@ foreach ($batches as $batchInfo) {
                 ],
                 'Description' => $fundName . ' gross donations (Batch ' . $batchId . ')',
             ];
+
+            if (is_array($paymentMethods) && count($paymentMethods) === 1) {
+                $pmName = map_payment_method_name(array_keys($paymentMethods)[0]);
+                if ($pmName) {
+                    $pmObj = $qbo->getPaymentMethodByName($pmName);
+                    if ($pmObj) {
+                        $line['DepositLineDetail']['PaymentMethodRef'] = [
+                            'value' => (string)$pmObj['Id'],
+                            'name'  => $pmObj['Name'] ?? $pmName,
+                        ];
+                    }
+                }
+            }
 
             if ($classId) {
                 $line['DepositLineDetail']['ClassRef'] = [

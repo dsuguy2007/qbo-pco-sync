@@ -380,6 +380,36 @@ function renderLayout(string $title, string $heroTitle, string $lede, string $co
     <?php
 }
 
+/**
+ * Map raw payment method to the QBO PaymentMethod name.
+ */
+function map_payment_method_name(?string $raw): ?string
+{
+    if ($raw === null) {
+        return null;
+    }
+    $m = strtolower(trim($raw));
+    if ($m === '') {
+        return null;
+    }
+    if (in_array($m, ['card', 'credit_card', 'credit card'], true)) {
+        return 'Credit Card';
+    }
+    if ($m === 'ach') {
+        return 'ACH';
+    }
+    if ($m === 'eft') {
+        return 'EFT';
+    }
+    if ($m === 'cash') {
+        return 'cash';
+    }
+    if (in_array($m, ['check', 'cheque'], true)) {
+        return 'check';
+    }
+    return null;
+}
+
 function get_display_timezone(PDO $pdo): DateTimeZone
 {
     try {
@@ -630,6 +660,7 @@ if (empty($errors)) {
         foreach ($group['funds'] as $fundRow) {
             $fundName  = $fundRow['pco_fund_name'];
             $className = $fundRow['qbo_class_name'];
+            $paymentMethods = $fundRow['payment_methods'] ?? [];
 
             $classId = null;
             if ($className) {
@@ -659,6 +690,18 @@ if (empty($errors)) {
                     ],
                 ],
             ];
+            if (is_array($paymentMethods) && count($paymentMethods) === 1) {
+                $pmName = map_payment_method_name($paymentMethods[0]);
+                if ($pmName) {
+                    $pmObj = $qbo->getPaymentMethodByName($pmName);
+                    if ($pmObj) {
+                        $line['DepositLineDetail']['PaymentMethodRef'] = [
+                            'value' => (string)$pmObj['Id'],
+                            'name'  => $pmObj['Name'] ?? $pmName,
+                        ];
+                    }
+                }
+            }
             if ($classId !== null) {
                 $line['DepositLineDetail']['ClassRef'] = [
                     'value' => $classId,

@@ -23,6 +23,19 @@ if (!$webhookSecretValid) {
     Auth::requireLogin();
 }
 
+function map_payment_method_name(?string $raw): ?string
+{
+    if ($raw === null) { return null; }
+    $m = strtolower(trim($raw));
+    if ($m === '') { return null; }
+    if (in_array($m, ['card', 'credit_card', 'credit card'], true)) { return 'Credit Card'; }
+    if ($m === 'ach') { return 'ACH'; }
+    if ($m === 'eft') { return 'EFT'; }
+    if ($m === 'cash') { return 'cash'; }
+    if (in_array($m, ['check', 'cheque'], true)) { return 'check'; }
+    return null;
+}
+
 function get_setting(PDO $pdo, string $key): ?string
 {
     $stmt = $pdo->prepare('SELECT setting_value FROM sync_settings WHERE setting_key = :key ORDER BY id DESC LIMIT 1');
@@ -275,6 +288,7 @@ foreach ($payments as $pay) {
     $createdBy = trim((string)($regAttrs['created_by_name'] ?? ''));
     $personName = $payerName !== '' ? $payerName : ($createdBy !== '' ? $createdBy : 'Unknown person');
     $paymentMethod = trim((string)($attrs['instrument'] ?? ''));
+    $pmName = map_payment_method_name($paymentMethod);
 
     $descPieces = array_filter([
         'Registration: ' . $eventName,
@@ -296,6 +310,19 @@ foreach ($payments as $pay) {
             ],
         ],
     ];
+    if ($pmName) {
+        try {
+            $pmObj = $qbo->getPaymentMethodByName($pmName);
+            if ($pmObj) {
+                $line['DepositLineDetail']['PaymentMethodRef'] = [
+                    'value' => (string)$pmObj['Id'],
+                    'name'  => $pmObj['Name'] ?? $pmName,
+                ];
+            }
+        } catch (Throwable $e) {
+            // ignore missing payment method and continue
+        }
+    }
     if ($classRef) {
         $line['DepositLineDetail']['ClassRef'] = $classRef;
     }

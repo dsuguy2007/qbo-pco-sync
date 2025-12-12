@@ -15,6 +15,7 @@ class QboClient
     private array $accountCache = [];
     private array $classCache   = [];
     private array $deptCache    = [];
+    private array $paymentMethodCache = [];
 
     public function __construct(PDO $pdo, array $config)
     {
@@ -295,5 +296,29 @@ class QboClient
         $path = '/deposit';
         $query = ['minorversion' => 65];
         return $this->apiRequest('POST', $path, $query, $deposit);
+    }
+
+    public function getPaymentMethodByName(string $name): ?array
+    {
+        if ($name === '') {
+            return null;
+        }
+
+        if (isset($this->paymentMethodCache[$name])) {
+            return $this->paymentMethodCache[$name];
+        }
+
+        $nameEscaped = str_replace("'", "''", $name);
+        $sql = "select * from PaymentMethod where Name = '{$nameEscaped}'";
+        $resp = $this->query($sql);
+        $qr   = $resp['QueryResponse'] ?? [];
+        $items = $qr['PaymentMethod'] ?? [];
+        if (!$items) {
+            $this->paymentMethodCache[$name] = null;
+            return null;
+        }
+        $method = $items[0];
+        $this->paymentMethodCache[$name] = $method;
+        return $method;
     }
 }

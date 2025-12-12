@@ -220,11 +220,15 @@ class SyncService
                         'qbo_location_name' => $map['qbo_location_name'],
                         'gross_cents'       => 0,
                         'fee_cents'         => 0,
+                        'payment_methods'   => [],
                     ];
                 }
 
                 $fundTotals[$key]['gross_cents'] += $gross;
                 $fundTotals[$key]['fee_cents']   += $feeShareCents;
+                if ($paymentMethod !== '') {
+                    $fundTotals[$key]['payment_methods'][$paymentMethod] = true;
+                }
             }
         }
 
@@ -249,6 +253,7 @@ class SyncService
                 'gross'             => $grossCents / 100.0,
                 'fee'               => $feeCents / 100.0,
                 'net'               => $netCents / 100.0,
+                'payment_methods'   => array_keys($row['payment_methods'] ?? []),
             ];
         }
 
