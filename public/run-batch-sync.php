@@ -871,47 +871,73 @@ foreach ($batches as $batchInfo) {
                 }
             }
 
-            $gross = round((float)$fundRow['gross'], 2);
-            if ($gross == 0.0) {
-                continue;
-            }
-
-            $line = [
-                'Amount'     => $gross,
-                'DetailType' => 'DepositLineDetail',
-                'DepositLineDetail' => [
-                    'AccountRef' => [
-                        'value' => (string)$incomeAccount['Id'],
-                        'name'  => $incomeAccount['Name'] ?? $incomeAccountName,
-                    ],
-                ],
-                'Description' => $fundName . ' gross donations (Batch ' . $batchId . ')',
-            ];
-
-            $pmStats['lines']++;
-            if (is_array($paymentMethods) && count($paymentMethods) === 1) {
-                $pmName = map_payment_method_name(array_keys($paymentMethods)[0]);
-                if ($pmName) {
-                    $pmObj = $qbo->getPaymentMethodByName($pmName);
-                    if ($pmObj) {
-                        $line['DepositLineDetail']['PaymentMethodRef'] = [
-                            'value' => (string)$pmObj['Id'],
-                            'name'  => $pmObj['Name'] ?? $pmName,
-                        ];
-                        $pmStats['with_ref']++;
-                    }
+            // Group per payment method for this fund to retain class/location.
+            $methodBuckets = [];
+            if (!empty($paymentMethods)) {
+                foreach (array_keys($paymentMethods) as $pm) {
+                    $methodBuckets[$pm] = $methodBuckets[$pm] ?? 0.0;
                 }
-            } elseif (is_array($paymentMethods) && count($paymentMethods) > 1) {
-                $pmStats['multi']++;
+            }
+            // If no method tracked, treat as single bucket with empty key
+            if (empty($methodBuckets)) {
+                $methodBuckets[''] = 0.0;
             }
 
-            if ($classId) {
-                $line['DepositLineDetail']['ClassRef'] = [
-                    'value' => (string)$classId,
+            // Split gross across buckets proportionally (since batch donations are already per method, we can just assign entire gross)
+            // Here we only know total gross per fund; assume evenly distributed if multiple methods present.
+            $grossTotal = round((float)$fundRow['gross'], 2);
+            $bucketCount = count($methodBuckets);
+            $allocated = 0.0;
+            $i = 0;
+            foreach ($methodBuckets as $pm => $_) {
+                $i++;
+                $share = ($i === $bucketCount) ? ($grossTotal - $allocated) : round($grossTotal / $bucketCount, 2);
+                $allocated += $share;
+                $methodBuckets[$pm] = $share;
+            }
+
+            foreach ($methodBuckets as $pmRaw => $gross) {
+                if ($gross == 0.0) {
+                    continue;
+                }
+
+                $line = [
+                    'Amount'     => $gross,
+                    'DetailType' => 'DepositLineDetail',
+                    'DepositLineDetail' => [
+                        'AccountRef' => [
+                            'value' => (string)$incomeAccount['Id'],
+                            'name'  => $incomeAccount['Name'] ?? $incomeAccountName,
+                        ],
+                    ],
+                    'Description' => $fundName . ' (' . ($pmRaw !== '' ? $pmRaw : 'unspecified') . ') donations (Batch ' . $batchId . ')',
                 ];
-            }
 
-            $lines[] = $line;
+                $pmStats['lines']++;
+                if ($pmRaw !== '') {
+                    $pmName = map_payment_method_name($pmRaw);
+                    if ($pmName) {
+                        $pmObj = $qbo->getPaymentMethodByName($pmName);
+                        if ($pmObj) {
+                            $line['DepositLineDetail']['PaymentMethodRef'] = [
+                                'value' => (string)$pmObj['Id'],
+                                'name'  => $pmObj['Name'] ?? $pmName,
+                            ];
+                            $pmStats['with_ref']++;
+                        }
+                    }
+                } else {
+                    $pmStats['multi']++;
+                }
+
+                if ($classId) {
+                    $line['DepositLineDetail']['ClassRef'] = [
+                        'value' => (string)$classId,
+                    ];
+                }
+
+                $lines[] = $line;
+            }
         }
 
         if (empty($lines)) {
