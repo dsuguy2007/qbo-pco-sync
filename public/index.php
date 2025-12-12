@@ -431,7 +431,6 @@ try {
                     <div class="eyebrow">Sync actions</div>
                     <p class="section-title">Run or inspect data flows</p>
                 </div>
-                <a href="run-sync.php" class="btn secondary">Run sync now</a>
             </div>
             <div class="action-grid">
                 <a class="tile" href="run-sync-preview.php">
@@ -439,15 +438,15 @@ try {
                     <span class="desc">Check upcoming donations with the current completed_at filters.</span>
                 </a>
                 <a class="tile" href="run-sync.php">
-                    <span class="title">Immediate sync</span>
-                    <span class="desc">Push eligible PCO Stripe payouts into QuickBooks right away.</span>
+                    <span class="title">Immediate Stripe Sync</span>
+                    <span class="desc">Push completed PCO Stripe payouts into QuickBooks.</span>
                 </a>
                 <a class="tile" href="run-batch-sync.php">
-                    <span class="title">Committed batch sync</span>
-                    <span class="desc">Process queued batches that were confirmed for bookkeeping.</span>
+                    <span class="title">Immediate Batch Sync</span>
+                    <span class="desc">Push committed PCO batches into QuickBooks</span>
                 </a>
                 <a class="tile" href="logs.php">
-                    <span class="title">Recent sync logs</span>
+                    <span class="title">Sync Logs</span>
                     <span class="desc">Review latest runs, errors, and durations for quick troubleshooting.</span>
                 </a>
             </div>
@@ -461,10 +460,9 @@ try {
                 </div>
             </div>
             <div class="list">
-                <a href="create_admin.php">Create another admin user</a>
+                <a href="create_admin.php">Create another user</a>
                 <a href="logout.php">Log out</a>
                 <a href="test-pco.php">Test PCO connection</a>
-                <a href="test-donations.php">Test donations payload</a>
             </div>
         </div>
 
