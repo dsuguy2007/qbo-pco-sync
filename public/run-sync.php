@@ -25,6 +25,13 @@ if (!$webhookSecretValid) {
     Auth::requireLogin();
 }
 
+// Prevent overlapping runs (webhook or manual)
+if (!acquire_lock('run_sync', 900)) {
+    http_response_code(429);
+    echo '<h1>Sync busy</h1><p>A sync is already running. Please try again in a few minutes.</p>';
+    exit;
+}
+
 $logger = null;
 $logId  = null;
 
@@ -381,6 +388,27 @@ function renderLayout(string $title, string $heroTitle, string $lede, string $co
 }
 
 /**
+ * Try to acquire a simple file lock to avoid overlapping runs.
+ */
+function acquire_lock(string $name, int $ttlSeconds = 900): bool
+{
+    $lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'qbo_pco_' . $name . '.lock';
+    if (file_exists($lockFile)) {
+        $age = time() - (int)filemtime($lockFile);
+        if ($age < $ttlSeconds) {
+            return false;
+        }
+    }
+    @touch($lockFile);
+    register_shutdown_function(static function () use ($lockFile) {
+        if (file_exists($lockFile)) {
+            @unlink($lockFile);
+        }
+    });
+    return true;
+}
+
+/**
  * Map raw payment method to the QBO PaymentMethod name.
  */
 function map_payment_method_name(?string $raw): ?string
@@ -633,6 +661,7 @@ foreach ($preview['funds'] as $row) {
 
 // --- Build and send one Deposit per Location --------------------------------
 
+$pmStats = ['lines' => 0, 'with_ref' => 0, 'multi' => 0];
 if (empty($errors)) {
     foreach ($locationGroups as $locKey => $group) {
         $locName = $group['location_name'];
@@ -690,6 +719,7 @@ if (empty($errors)) {
                     ],
                 ],
             ];
+            $pmStats['lines']++;
             if (is_array($paymentMethods) && count($paymentMethods) === 1) {
                 $pmName = map_payment_method_name($paymentMethods[0]);
                 if ($pmName) {
@@ -699,8 +729,11 @@ if (empty($errors)) {
                             'value' => (string)$pmObj['Id'],
                             'name'  => $pmObj['Name'] ?? $pmName,
                         ];
+                        $pmStats['with_ref']++;
                     }
                 }
+            } elseif (is_array($paymentMethods) && count($paymentMethods) > 1) {
+                $pmStats['multi']++;
             }
             if ($classId !== null) {
                 $line['DepositLineDetail']['ClassRef'] = [
@@ -915,6 +948,20 @@ $summary = empty($errors)
         : 'Stripe sync: ' . count($createdDeposits) . ' deposit(s) created or already present.')
     : 'Stripe sync completed with errors.';
 $details = empty($errors) ? null : implode("\n", $errors);
+$summaryData = [
+    'ts'        => $nowUtc->format(DateTimeInterface::ATOM),
+    'status'    => $status,
+    'deposits'  => count($createdDeposits),
+    'window'    => [
+        'since' => $preview['since']->format(DateTimeInterface::ATOM),
+        'until' => $preview['until']->format(DateTimeInterface::ATOM),
+    ],
+    'payment_method_lines_total' => $pmStats['lines'],
+    'payment_method_lines_with_ref' => $pmStats['with_ref'],
+    'payment_method_multi_method'   => $pmStats['multi'],
+    'errors'    => $errors,
+];
+set_setting($pdo, 'last_stripe_sync_summary', json_encode($summaryData));
 finish_log($logger, $logId, $status, $summary, $details);
 
 renderLayout('PCO -> QBO Stripe Sync Result', 'PCO -> QBO Stripe Sync Result', 'Manual run of Stripe donation deposits', $content);

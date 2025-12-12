@@ -110,6 +110,29 @@ try {
     $notificationEmail = null;
 }
 
+$syncSummaries = [];
+function load_sync_summary(PDO $pdo, string $key): ?array
+{
+    try {
+        $stmt = $pdo->prepare('SELECT setting_value FROM sync_settings WHERE setting_key = :key ORDER BY id DESC LIMIT 1');
+        $stmt->execute([':key' => $key]);
+        $val = $stmt->fetchColumn();
+        if ($val) {
+            $decoded = json_decode((string)$val, true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+    } catch (Throwable $e) {
+        return null;
+    }
+    return null;
+}
+
+$syncSummaries['stripe']         = load_sync_summary($pdo, 'last_stripe_sync_summary');
+$syncSummaries['batch']          = load_sync_summary($pdo, 'last_batch_sync_summary');
+$syncSummaries['registrations']  = load_sync_summary($pdo, 'last_registrations_sync_summary');
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -506,6 +529,37 @@ try {
         <div class="card section">
             <div class="section-header">
                 <div>
+                    <div class="eyebrow">Status</div>
+                    <p class="section-title">Recent sync snapshots</p>
+                </div>
+            </div>
+            <div class="list">
+                <?php
+                $labels = [
+                    'stripe' => 'Stripe donations',
+                    'batch'  => 'Committed batches',
+                    'registrations' => 'Registrations payments',
+                ];
+                foreach ($labels as $key => $label):
+                    $s = $syncSummaries[$key] ?? null;
+                    if (!$s) { continue; }
+                    $ts = htmlspecialchars((string)($s['ts'] ?? ''), ENT_QUOTES, 'UTF-8');
+                    $statusTxt = htmlspecialchars((string)($s['status'] ?? 'unknown'), ENT_QUOTES, 'UTF-8');
+                ?>
+                <div>
+                    <strong><?= $label ?></strong>
+                    <span class="muted">— <?= $statusTxt ?> @ <?= $ts ?></span>
+                </div>
+                <?php endforeach; ?>
+                <?php if (empty(array_filter($syncSummaries))): ?>
+                    <div class="muted">No recent sync summaries yet.</div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <div class="card section">
+            <div class="section-header">
+                <div>
                     <div class="eyebrow">Admin</div>
                     <p class="section-title">Session & housekeeping</p>
                 </div>
@@ -514,6 +568,7 @@ try {
                 <a href="create_admin.php">Create another user</a>
                 <a href="logout.php">Log out</a>
                 <a href="test-pco.php">Test PCO connection</a>
+                <a href="self-check.php">System self-check</a>
             </div>
         </div>
 

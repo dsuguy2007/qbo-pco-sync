@@ -27,64 +27,101 @@ class PcoClient
      */
     private function request(string $method, string $path, array $query = [], array $headers = []): array
     {
-        // If $path is a full URL (from "links.next"), don't double-prefix
-        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-            $url = $path;
-        } else {
-            $url = $this->baseUrl . $path;
-        }
+        $attempts   = 0;
+        $maxTries   = 3;
+        $delay      = 1; // seconds
+        $lastErrMsg = null;
+        $expectedRegVersion = '2024-10-01';
 
-        if (!empty($query)) {
-            $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
-        }
+        while ($attempts < $maxTries) {
+            $attempts++;
 
-        $ch = curl_init($url);
-
-        $httpHeaders = ['Accept: application/json'];
-        // Registrations endpoints require an older version header; default is now missing payments.
-        if (str_contains($path, '/registrations/')) {
-            $httpHeaders[] = 'X-PCO-API-Version: 2024-10-01';
-        }
-        foreach ($headers as $h) {
-            $httpHeaders[] = $h;
-        }
-
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CUSTOMREQUEST  => strtoupper($method),
-            CURLOPT_USERPWD        => $this->appId . ':' . $this->secret,
-            CURLOPT_HTTPAUTH       => CURLAUTH_BASIC,
-            CURLOPT_HTTPHEADER     => $httpHeaders,
-            CURLOPT_TIMEOUT        => 30,
-        ]);
-
-        $body   = curl_exec($ch);
-        $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $err    = curl_error($ch);
-        curl_close($ch);
-
-        if ($body === false) {
-            throw new RuntimeException('PCO cURL error: ' . $err);
-        }
-
-        $decoded = json_decode($body, true);
-
-        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
-            throw new RuntimeException(
-                'PCO JSON decode error: ' . json_last_error_msg() .
-                ' | Raw body: ' . substr($body, 0, 500)
-            );
-        }
-
-        if ($status >= 400) {
-            $msg = "PCO API error HTTP {$status}";
-            if (isset($decoded['errors']) && is_array($decoded['errors'])) {
-                $msg .= ' | ' . json_encode($decoded['errors']);
+            // If $path is a full URL (from "links.next"), don't double-prefix
+            if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
+                $url = $path;
+            } else {
+                $url = $this->baseUrl . $path;
             }
-            throw new RuntimeException($msg);
+
+            if (!empty($query)) {
+                $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
+            }
+
+            $respHeaders = [];
+            $ch = curl_init($url);
+
+            $httpHeaders = ['Accept: application/json'];
+            // Registrations endpoints require an older version header; default is now missing payments.
+            if (str_contains($path, '/registrations/')) {
+                $httpHeaders[] = 'X-PCO-API-Version: ' . $expectedRegVersion;
+            }
+            foreach ($headers as $h) {
+                $httpHeaders[] = $h;
+            }
+
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CUSTOMREQUEST  => strtoupper($method),
+                CURLOPT_USERPWD        => $this->appId . ':' . $this->secret,
+                CURLOPT_HTTPAUTH       => CURLAUTH_BASIC,
+                CURLOPT_HTTPHEADER     => $httpHeaders,
+                CURLOPT_TIMEOUT        => 30,
+                CURLOPT_HEADERFUNCTION => function ($curl, $header) use (&$respHeaders) {
+                    $len = strlen($header);
+                    $parts = explode(':', $header, 2);
+                    if (count($parts) === 2) {
+                        $name = strtolower(trim($parts[0]));
+                        $value = trim($parts[1]);
+                        $respHeaders[$name] = $value;
+                    }
+                    return $len;
+                },
+            ]);
+
+            $body   = curl_exec($ch);
+            $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err    = curl_error($ch);
+            curl_close($ch);
+
+            if ($body === false) {
+                $lastErrMsg = 'PCO cURL error: ' . $err;
+                // retry if we can
+            } else {
+                $decoded = json_decode($body, true);
+
+                if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+                    $lastErrMsg = 'PCO JSON decode error: ' . json_last_error_msg() . ' | Raw body: ' . substr($body, 0, 500);
+                } elseif ($status >= 400) {
+                    $msg = "PCO API error HTTP {$status}";
+                    if (isset($decoded['errors']) && is_array($decoded['errors'])) {
+                        $msg .= ' | ' . json_encode($decoded['errors']);
+                    }
+                    $lastErrMsg = $msg;
+                } else {
+                    // Version drift warning for Registrations
+                    if (str_contains($path, '/registrations/')) {
+                        $seenVer = $respHeaders['x-pco-api-processed-as-version'] ?? null;
+                        if ($seenVer && $seenVer !== $expectedRegVersion) {
+                            error_log("[pco] Registrations API version drift: expected {$expectedRegVersion}, got {$seenVer}");
+                        }
+                    }
+                    return $decoded;
+                }
+            }
+
+            // Retry on transient statuses/cURL failures
+            if ($status === 429 || ($status >= 500 && $status < 600) || $body === false) {
+                if ($attempts < $maxTries) {
+                    sleep($delay);
+                    $delay *= 2;
+                    continue;
+                }
+            }
+
+            break;
         }
 
-        return $decoded;
+        throw new RuntimeException($lastErrMsg ?? 'Unknown PCO error');
     }
 
     /**

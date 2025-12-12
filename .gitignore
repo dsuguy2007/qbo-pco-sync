@@ -1,5 +1,6 @@
 # Local config with real secrets (never commit)
 config/config.php
+config/.env
 
 # If you ever install dependencies via Composer
 vendor/

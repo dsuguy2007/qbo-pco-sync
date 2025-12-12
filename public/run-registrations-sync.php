@@ -23,6 +23,30 @@ if (!$webhookSecretValid) {
     Auth::requireLogin();
 }
 
+function acquire_lock(string $name, int $ttlSeconds = 900): bool
+{
+    $lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'qbo_pco_' . $name . '.lock';
+    if (file_exists($lockFile)) {
+        $age = time() - (int)filemtime($lockFile);
+        if ($age < $ttlSeconds) {
+            return false;
+        }
+    }
+    @touch($lockFile);
+    register_shutdown_function(static function () use ($lockFile) {
+        if (file_exists($lockFile)) {
+            @unlink($lockFile);
+        }
+    });
+    return true;
+}
+
+if (!acquire_lock('registrations_sync', 900)) {
+    http_response_code(429);
+    echo '<h1>Registrations sync busy</h1><p>Another registrations sync is running. Please try again shortly.</p>';
+    exit;
+}
+
 function map_payment_method_name(?string $raw): ?string
 {
     if ($raw === null) { return null; }
@@ -247,6 +271,7 @@ $feeLines = [];
 $processedIds = [];
 $grossTotal = 0.0;
 $feeTotal   = 0.0;
+$pmStats    = ['lines' => 0, 'with_ref' => 0, 'missing' => 0];
 
 foreach ($payments as $pay) {
     $attrs  = $pay['attributes'] ?? [];
@@ -310,6 +335,7 @@ foreach ($payments as $pay) {
             ],
         ],
     ];
+    $pmStats['lines']++;
     if ($pmName) {
         try {
             $pmObj = $qbo->getPaymentMethodByName($pmName);
@@ -318,10 +344,13 @@ foreach ($payments as $pay) {
                     'value' => (string)$pmObj['Id'],
                     'name'  => $pmObj['Name'] ?? $pmName,
                 ];
+                $pmStats['with_ref']++;
             }
         } catch (Throwable $e) {
             // ignore missing payment method and continue
         }
+    } else {
+        $pmStats['missing']++;
     }
     if ($classRef) {
         $line['DepositLineDetail']['ClassRef'] = $classRef;
@@ -399,6 +428,21 @@ try {
 } catch (Throwable $e) {
     $errors[] = $e->getMessage();
 }
+$status = empty($errors) ? 'success' : 'error';
+$summaryData = [
+    'ts'        => $nowUtc->format(DateTimeInterface::ATOM),
+    'status'    => $status,
+    'payments'  => count($processedIds),
+    'window'    => [
+        'since' => $sinceUtc->format(DateTimeInterface::ATOM),
+        'until' => $nowUtc->format(DateTimeInterface::ATOM),
+    ],
+    'payment_method_lines_total' => $pmStats['lines'],
+    'payment_method_lines_with_ref' => $pmStats['with_ref'],
+    'payment_method_missing'        => $pmStats['missing'],
+    'errors'    => $errors,
+];
+set_setting($pdo, 'last_registrations_sync_summary', json_encode($summaryData));
 ?>
 <!DOCTYPE html>
 <html lang="en">

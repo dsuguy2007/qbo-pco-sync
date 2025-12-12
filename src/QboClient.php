@@ -156,64 +156,85 @@ class QboClient
     private function apiRequest(string $method, string $path, array $query = [], ?array $body = null): array
     {
         $this->ensureAccessToken();
+        $attempts   = 0;
+        $maxTries   = 3;
+        $delay      = 1;
+        $lastErrMsg = null;
 
-        $url = $this->baseUrl . '/v3/company/' . rawurlencode($this->realmId) . $path;
+        while ($attempts < $maxTries) {
+            $attempts++;
 
-        if (!empty($query)) {
-            $queryString = http_build_query($query);
-            $url .= (str_contains($url, '?') ? '&' : '?') . $queryString;
-        }
+            $url = $this->baseUrl . '/v3/company/' . rawurlencode($this->realmId) . $path;
 
-        $headers = [
-            'Accept: application/json',
-            'Authorization: Bearer ' . $this->accessToken,
-        ];
-
-        $ch = curl_init($url);
-        $opts = [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CUSTOMREQUEST  => strtoupper($method),
-            CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_TIMEOUT        => 30,
-        ];
-
-        if ($body !== null) {
-            $json = json_encode($body);
-            if ($json === false) {
-                throw new RuntimeException('Failed to encode JSON body for QBO request.');
+            if (!empty($query)) {
+                $queryString = http_build_query($query);
+                $url .= (str_contains($url, '?') ? '&' : '?') . $queryString;
             }
-            $opts[CURLOPT_POSTFIELDS] = $json;
-            $headers[] = 'Content-Type: application/json';
-            $opts[CURLOPT_HTTPHEADER] = $headers;
+
+            $headers = [
+                'Accept: application/json',
+                'Authorization: Bearer ' . $this->accessToken,
+            ];
+
+            $ch = curl_init($url);
+            $opts = [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CUSTOMREQUEST  => strtoupper($method),
+                CURLOPT_HTTPHEADER     => $headers,
+                CURLOPT_TIMEOUT        => 30,
+            ];
+
+            if ($body !== null) {
+                $json = json_encode($body);
+                if ($json === false) {
+                    throw new RuntimeException('Failed to encode JSON body for QBO request.');
+                }
+                $opts[CURLOPT_POSTFIELDS] = $json;
+                $headers[] = 'Content-Type: application/json';
+                $opts[CURLOPT_HTTPHEADER] = $headers;
+            }
+
+            curl_setopt_array($ch, $opts);
+
+            $responseBody = curl_exec($ch);
+            $status       = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err          = curl_error($ch);
+            curl_close($ch);
+
+            if ($responseBody === false) {
+                $lastErrMsg = 'QBO cURL error: ' . $err;
+                // retry if possible
+            } else {
+                // Handle 401 by refreshing token once and retrying
+                if ($status === 401) {
+                    $this->refreshAccessToken();
+                    if ($attempts < $maxTries) {
+                        continue;
+                    }
+                }
+
+                $decoded = json_decode($responseBody, true);
+                if ($decoded === null || json_last_error() !== JSON_ERROR_NONE) {
+                    $lastErrMsg = 'QBO JSON decode error: ' . json_last_error_msg() . ' | Raw: ' . substr($responseBody, 0, 500);
+                } elseif ($status >= 400) {
+                    $lastErrMsg = 'QBO API error HTTP ' . $status . ': ' . $responseBody;
+                } else {
+                    return $decoded;
+                }
+            }
+
+            // Retry on 429/5xx or network errors
+            if ($status === 429 || ($status >= 500 && $status < 600) || $responseBody === false) {
+                if ($attempts < $maxTries) {
+                    sleep($delay);
+                    $delay *= 2;
+                    continue;
+                }
+            }
+            break;
         }
 
-        curl_setopt_array($ch, $opts);
-
-        $responseBody = curl_exec($ch);
-        $status       = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $err          = curl_error($ch);
-        curl_close($ch);
-
-        if ($responseBody === false) {
-            throw new RuntimeException('QBO cURL error: ' . $err);
-        }
-
-        // Handle 401 by refreshing token once and retrying
-        if ($status === 401) {
-            $this->refreshAccessToken();
-            return $this->apiRequest($method, $path, $query, $body);
-        }
-
-        $decoded = json_decode($responseBody, true);
-        if ($decoded === null || json_last_error() !== JSON_ERROR_NONE) {
-            throw new RuntimeException('QBO JSON decode error: ' . json_last_error_msg() . ' | Raw: ' . substr($responseBody, 0, 500));
-        }
-
-        if ($status >= 400) {
-            throw new RuntimeException('QBO API error HTTP ' . $status . ': ' . $responseBody);
-        }
-
-        return $decoded;
+        throw new RuntimeException($lastErrMsg ?? 'Unknown QBO error');
     }
 
     private function query(string $sql): array

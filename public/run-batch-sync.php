@@ -24,9 +24,33 @@ if (!$webhookSecretValid) {
     Auth::requireLogin();
 }
 
+if (!acquire_lock('batch_sync', 900)) {
+    http_response_code(429);
+    echo '<h1>Batch sync busy</h1><p>Another batch sync is running. Please retry in a few minutes.</p>';
+    exit;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function acquire_lock(string $name, int $ttlSeconds = 900): bool
+{
+    $lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'qbo_pco_' . $name . '.lock';
+    if (file_exists($lockFile)) {
+        $age = time() - (int)filemtime($lockFile);
+        if ($age < $ttlSeconds) {
+            return false;
+        }
+    }
+    @touch($lockFile);
+    register_shutdown_function(static function () use ($lockFile) {
+        if (file_exists($lockFile)) {
+            @unlink($lockFile);
+        }
+    });
+    return true;
+}
 
 function map_payment_method_name(?string $raw): ?string
 {
@@ -796,6 +820,7 @@ foreach ($batches as $batchInfo) {
 
     $batchHadErrors = false;
     $batchDeposits  = [];
+    $pmStats = ['lines' => 0, 'with_ref' => 0, 'multi' => 0];
 
     foreach ($locationGroups as $locKey => $group) {
         $locName      = $group['location_name'];
@@ -863,6 +888,7 @@ foreach ($batches as $batchInfo) {
                 'Description' => $fundName . ' gross donations (Batch ' . $batchId . ')',
             ];
 
+            $pmStats['lines']++;
             if (is_array($paymentMethods) && count($paymentMethods) === 1) {
                 $pmName = map_payment_method_name(array_keys($paymentMethods)[0]);
                 if ($pmName) {
@@ -872,8 +898,11 @@ foreach ($batches as $batchInfo) {
                             'value' => (string)$pmObj['Id'],
                             'name'  => $pmObj['Name'] ?? $pmName,
                         ];
+                        $pmStats['with_ref']++;
                     }
                 }
+            } elseif (is_array($paymentMethods) && count($paymentMethods) > 1) {
+                $pmStats['multi']++;
             }
 
             if ($classId) {
@@ -971,6 +1000,20 @@ $summary = sprintf(
     count($createdDeposits)
 );
 $details = empty($errors) ? null : implode("\n", $errors);
+$summaryData = [
+    'ts'        => $nowUtc->format(DateTimeInterface::ATOM),
+    'status'    => $status,
+    'deposits'  => count($createdDeposits),
+    'window'    => [
+        'since' => $sinceUtc->format(DateTimeInterface::ATOM),
+        'until' => $windowEnd->format(DateTimeInterface::ATOM),
+    ],
+    'payment_method_lines_total' => $pmStats['lines'],
+    'payment_method_lines_with_ref' => $pmStats['with_ref'],
+    'payment_method_multi_method'   => $pmStats['multi'],
+    'errors'    => $errors,
+];
+set_setting($pdo, 'last_batch_sync_summary', json_encode($summaryData));
 
 $logger->finish($logId, $status, $summary, $details);
 
