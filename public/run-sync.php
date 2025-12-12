@@ -10,7 +10,14 @@ require_once __DIR__ . '/../src/QboClient.php';
 require_once __DIR__ . '/../src/SyncLogger.php';
 require_once __DIR__ . '/../src/Auth.php';
 
-Auth::requireLogin();
+$webhookSecretValid = false;
+if (isset($_GET['webhook_secret'], $config['webhook_secret']) && hash_equals($config['webhook_secret'], (string)$_GET['webhook_secret'])) {
+    $webhookSecretValid = true;
+}
+
+if (!$webhookSecretValid) {
+    Auth::requireLogin();
+}
 
 /**
  * Get a setting from sync_settings.

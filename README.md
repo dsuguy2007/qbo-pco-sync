@@ -43,11 +43,16 @@ Bridge Planning Center Giving data (Stripe payouts and committed batches) into Q
    - Use the client id as `pco.app_id` and the client secret as `pco.secret` in `config/config.php`.
 
 6) **Create an admin user**
-   - Visit `public/create_admin.php` in your browser, create a user, then delete the file for safety.
+   - Visit `public/create_admin.php` in your browser to create the first admin user.
 
 7) **Run the app**
    - Point your web server (or `php -S localhost:8000 -t public`) to the `public` directory.
    - Login, connect QuickBooks, and verify PCO configuration.
+
+8) **Webhooks & scheduling**
+   - Add `webhook_secret` to `config/config.php`.
+   - Point PCO webhooks to `public/pco-webhook.php` with that secret; the webhook handler routes batch commits and donation completions.
+   - Webhooks do not currently cover Registrations; schedule `run-registrations-sync.php?webhook_secret=YOUR_SECRET` via cron/task runner to pull recent Registrations payments. NOTE: Registrations payments sync is currently in progress and so may not work properly.
 
 ## Usage highlights
 - **Connect QuickBooks**: `oauth-start.php` handles the OAuth flow and stores tokens.
@@ -55,6 +60,8 @@ Bridge Planning Center Giving data (Stripe payouts and committed batches) into Q
 - **Run online sync**: `run-sync.php` pushes Stripe payouts to QBO deposits with class/location mapping.
 - **Batch preview**: `run-batch-preview.php` shows committed batches (cash/check) and fund totals.
 - **Run batch sync**: `run-batch-sync.php` books committed batches into QBO deposits.
+- **Registrations preview**: `run-registrations-preview.php` shows PCO Registrations payments (poll-only; webhooks unavailable).
+- **Run registrations sync**: `run-registrations-sync.php` books Registrations payments into QBO deposits (schedule or trigger via secret).
 - **Fund mappings**: `fund-mapping.php` maps PCO funds to QBO Class/Location.
 - **Settings**: `settings.php` manages account names and notification email.
 - **Logs**: `logs.php` lists recent sync runs and supports cleanup.
