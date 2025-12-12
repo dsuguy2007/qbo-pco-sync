@@ -3,45 +3,43 @@ declare(strict_types=1);
 
 class SyncLogger
 {
-    public static function start(PDO $pdo, \DateTimeInterface $windowStart, \DateTimeInterface $windowEnd): int
-    {
-        $stmt = $pdo->prepare('
-            INSERT INTO sync_logs (started_at, window_start, window_end, status)
-            VALUES (UTC_TIMESTAMP(), :ws, :we, :status)
-        ');
-        $stmt->execute([
-            ':ws'     => $windowStart->format('Y-m-d H:i:s'),
-            ':we'     => $windowEnd->format('Y-m-d H:i:s'),
-            ':status' => 'success', // assume success until proven otherwise
-        ]);
+    private PDO $pdo;
 
-        return (int)$pdo->lastInsertId();
+    public function __construct(PDO $pdo)
+    {
+        $this->pdo = $pdo;
     }
 
-    public static function finish(
-        PDO $pdo,
-        int $logId,
-        string $status,
-        int $donationsCount,
-        int $depositsCount,
-        ?string $message = null
+    public function start(string $syncType): int
+    {
+        $stmt = $this->pdo->prepare(
+            'INSERT INTO sync_logs (sync_type, started_at, status) 
+             VALUES (:type, NOW(), "success")'
+        );
+        $stmt->execute([':type' => $syncType]);
+
+        return (int)$this->pdo->lastInsertId();
+    }
+
+    public function finish(
+        int $id,
+        string $status = 'success',
+        ?string $summary = null,
+        ?string $details = null
     ): void {
-        $stmt = $pdo->prepare('
-            UPDATE sync_logs
-               SET finished_at     = UTC_TIMESTAMP(),
-                   status          = :status,
-                   donations_count = :donations,
-                   deposits_count  = :deposits,
-                   message         = :message
-             WHERE id = :id
-             LIMIT 1
-        ');
+        $stmt = $this->pdo->prepare(
+            'UPDATE sync_logs
+                SET finished_at = NOW(),
+                    status = :status,
+                    summary = :summary,
+                    details = :details
+              WHERE id = :id'
+        );
         $stmt->execute([
-            ':status'    => $status,
-            ':donations' => $donationsCount,
-            ':deposits'  => $depositsCount,
-            ':message'   => $message,
-            ':id'        => $logId,
+            ':status'  => $status,
+            ':summary' => $summary,
+            ':details' => $details,
+            ':id'      => $id,
         ]);
     }
 }
