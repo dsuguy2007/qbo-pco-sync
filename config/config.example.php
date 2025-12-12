@@ -19,8 +19,13 @@ return [
         'charset' => 'utf8mb4',
     ],
 
-    // Shared secret for webhook verification (PCO authenticity_secret)
-    'webhook_secret' => 'CHANGE_ME_WEBHOOK_SECRET',
+    // Shared secret(s) for webhook verification (PCO authenticity_secret)
+    'webhook_secrets' => [
+        'giving.v2.events.batch.created'    => 'CHANGE_ME_BATCH_CREATED',
+        'giving.v2.events.batch.updated'    => 'CHANGE_ME_BATCH_UPDATED',
+        'giving.v2.events.donation.created' => 'CHANGE_ME_DONATION_CREATED',
+        'giving.v2.events.donation.updated' => 'CHANGE_ME_DONATION_UPDATED',
+    ],
 
     'qbo' => [
         // Intuit app credentials (do NOT commit real values to GitHub)
