@@ -93,6 +93,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             set_setting($pdo, 'batch_income_account_name', $batchIncomeName);
         }
 
+        // Registrations sync
+        $regDepositName  = trim((string)($_POST['reg_deposit_bank_account_name'] ?? ''));
+        $regIncomeName   = trim((string)($_POST['reg_income_account_name'] ?? ''));
+        $regClassName    = trim((string)($_POST['reg_class_name'] ?? ''));
+        $regLocationName = trim((string)($_POST['reg_location_name'] ?? ''));
+
+        if ($regDepositName !== '') {
+            set_setting($pdo, 'reg_deposit_bank_account_name', $regDepositName);
+        }
+        if ($regIncomeName !== '') {
+            set_setting($pdo, 'reg_income_account_name', $regIncomeName);
+        }
+        set_setting($pdo, 'reg_class_name', $regClassName);
+        set_setting($pdo, 'reg_location_name', $regLocationName);
+
         $message = 'Settings saved successfully.';
     } catch (Throwable $e) {
         $error = 'Error saving settings: ' . $e->getMessage();
@@ -121,6 +136,14 @@ $batchDepositBankName = get_setting($pdo, 'batch_deposit_bank_account_name')
 
 $batchIncomeAccountName = get_setting($pdo, 'batch_income_account_name')
     ?? $incomeAccountName;
+
+// Registrations settings
+$regDepositBankName = get_setting($pdo, 'reg_deposit_bank_account_name')
+    ?? $depositBankName;
+$regIncomeAccountName = get_setting($pdo, 'reg_income_account_name')
+    ?? $incomeAccountName;
+$regClassName = get_setting($pdo, 'reg_class_name') ?? '';
+$regLocationName = get_setting($pdo, 'reg_location_name') ?? '';
 
 // Last sync windows (read-only info)
 $lastStripeCompletedAt = get_setting($pdo, 'last_completed_at');
@@ -514,6 +537,62 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
         <div class="card">
             <div class="section-header">
                 <div>
+                    <p class="eyebrow" style="margin-bottom: 0.35rem;">Registrations sync</p>
+                    <p class="section-title">Event payments (Registrations)</p>
+                    <p class="section-sub">Default QBO targets for PCO Registrations payments.</p>
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="reg_deposit_bank_account_name">Registrations deposit bank account (QBO name)</label>
+                <input
+                    type="text"
+                    id="reg_deposit_bank_account_name"
+                    name="reg_deposit_bank_account_name"
+                    value="<?php echo htmlspecialchars($regDepositBankName, ENT_QUOTES, 'UTF-8'); ?>"
+                >
+                <div class="hint">Bank account used for deposits created from Registrations payments.</div>
+            </div>
+
+            <div class="field">
+                <label for="reg_income_account_name">Registrations income account (QBO name)</label>
+                <input
+                    type="text"
+                    id="reg_income_account_name"
+                    name="reg_income_account_name"
+                    value="<?php echo htmlspecialchars($regIncomeAccountName, ENT_QUOTES, 'UTF-8'); ?>"
+                >
+                <div class="hint">Income account for gross registration payments.</div>
+            </div>
+
+            <div class="field">
+                <label for="reg_class_name">Registrations Class (QBO name, optional)</label>
+                <input
+                    type="text"
+                    id="reg_class_name"
+                    name="reg_class_name"
+                    value="<?php echo htmlspecialchars($regClassName, ENT_QUOTES, 'UTF-8'); ?>"
+                >
+                <div class="hint">Optional Class to apply to registrations lines.</div>
+            </div>
+
+            <div class="field">
+                <label for="reg_location_name">Registrations Location (QBO Department name, optional)</label>
+                <input
+                    type="text"
+                    id="reg_location_name"
+                    name="reg_location_name"
+                    value="<?php echo htmlspecialchars($regLocationName, ENT_QUOTES, 'UTF-8'); ?>"
+                >
+                <div class="hint">Optional Location/Department to apply to registrations deposits.</div>
+            </div>
+
+            <div class="hint">Stripe fees for registrations will use the existing Stripe fee expense account.</div>
+        </div>
+
+        <div class="card">
+            <div class="section-header">
+                <div>
                     <p class="eyebrow" style="margin-bottom: 0.35rem;">Sync windows</p>
                     <p class="section-title">Read-only</p>
                     <p class="section-sub">Reference for the most recent sync windows.</p>
@@ -544,7 +623,7 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
         </div>
     </form>
     <div class="footer">
-        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard <a href="help.php">Help</a>
     </div>
 </div>
 </body>

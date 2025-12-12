@@ -484,6 +484,25 @@ try {
         <div class="card section">
             <div class="section-header">
                 <div>
+                    <div class="eyebrow">Registrations</div>
+                    <p class="section-title">Event payments</p>
+                </div>
+            </div>
+            <div class="action-grid">
+                <a class="tile" href="run-registrations-preview.php">
+                    <span class="title">Preview registrations payments</span>
+                    <span class="desc">Inspect recent PCO Registrations payments before syncing.</span>
+                </a>
+                <a class="tile" href="run-registrations-sync.php">
+                    <span class="title">Run registrations sync</span>
+                    <span class="desc">Push registrations payments into QuickBooks deposits.</span>
+                </a>
+            </div>
+        </div>
+
+        <div class="card section">
+            <div class="section-header">
+                <div>
                     <div class="eyebrow">Admin</div>
                     <p class="section-title">Session & housekeeping</p>
                 </div>

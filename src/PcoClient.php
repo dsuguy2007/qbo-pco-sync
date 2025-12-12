@@ -116,4 +116,38 @@ class PcoClient
         $path = '/giving/v2/donations';
         return $this->request('GET', $path, $query);
     }
+
+    /**
+     * List payments from PCO Registrations API (supports include/pagination).
+     *
+     * @param array $query Optional query params (e.g., include, per_page)
+     */
+    public function listRegistrationPayments(array $query = []): array
+    {
+        $payments = [];
+        $included = [];
+        $path     = '/registrations/v2/payments';
+        $params   = $query;
+
+        while ($path !== null) {
+            $resp = $this->request('GET', $path, $params);
+
+            if (isset($resp['data']) && is_array($resp['data'])) {
+                $payments = array_merge($payments, $resp['data']);
+            }
+            if (isset($resp['included']) && is_array($resp['included'])) {
+                $included = array_merge($included, $resp['included']);
+            }
+
+            $links = $resp['links'] ?? [];
+            if (!empty($links['next'])) {
+                $path   = $links['next'];
+                $params = [];
+            } else {
+                $path = null;
+            }
+        }
+
+        return ['data' => $payments, 'included' => $included];
+    }
 }
