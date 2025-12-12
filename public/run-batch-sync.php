@@ -49,6 +49,34 @@ function set_setting(PDO $pdo, string $key, string $value): void
     ]);
 }
 
+/**
+ * Check if a PCO batch has already been synced to QBO.
+ */
+function has_synced_batch(PDO $pdo, string $batchId): bool
+{
+    $stmt = $pdo->prepare(
+        'SELECT 1 FROM synced_batches WHERE batch_id = :id LIMIT 1'
+    );
+    $stmt->execute([':id' => $batchId]);
+    return (bool)$stmt->fetchColumn();
+}
+
+/**
+ * Mark a PCO batch as synced to QBO.
+ */
+function mark_synced_batch(PDO $pdo, string $batchId): void
+{
+    $stmt = $pdo->prepare(
+        'INSERT IGNORE INTO synced_batches (batch_id, created_at)
+               VALUES (:id, :created_at)'
+    );
+    $stmt->execute([
+        ':id'         => $batchId,
+        ':created_at' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))
+            ->format('Y-m-d H:i:s'),
+    ]);
+}
+
 function send_sync_email_if_needed(
     PDO $pdo,
     array $config,
@@ -470,10 +498,29 @@ try {
     $batches  = [];
 }
 
+$batchSummaries = [];
+
 foreach ($batches as $batchInfo) {
     $batchId     = $batchInfo['id'];
     $batchName   = $batchInfo['name'];
     $committedAt = $batchInfo['committed_at']; // DateTimeImmutable
+
+    // Duplicate protection: skip if we've already synced this batch
+    try {
+        if (has_synced_batch($pdo, $batchId)) {
+            $batchSummaries[] = [
+                'batch_id'  => $batchId,
+                'committed' => $committedAt instanceof DateTimeInterface ? $committedAt->format(DateTimeInterface::ATOM) : null,
+                'status'    => 'skipped',
+                'reason'    => 'already synced',
+                'deposits'  => [],
+            ];
+            continue;
+        }
+    } catch (Throwable $e) {
+        $errors[] = 'Error checking sync state for batch ' . $batchId . ': ' . $e->getMessage();
+        // Fall through and attempt processing; marking won't happen on error.
+    }
 
     // Group by Location within this batch
     $locationGroups = [];
@@ -537,6 +584,10 @@ foreach ($batches as $batchInfo) {
     }
 
     // For each (batch, location) group, build one Deposit
+
+    $batchHadErrors = false;
+    $batchDeposits  = [];
+
     foreach ($locationGroups as $locKey => $group) {
         $locName      = $group['location_name'];
         $batchName    = $group['batch_name'];
@@ -652,7 +703,6 @@ foreach ($batches as $batchInfo) {
             // or an array containing it. We'll just stash whatever comes back.
             $resp = $qbo->createDeposit($deposit);
             $dep  = $resp['Deposit'] ?? $resp;
-
             $createdDeposits[] = [
                 'batch_id'      => $batchId,
                 'batch_name'    => $batchName,
@@ -660,11 +710,36 @@ foreach ($batches as $batchInfo) {
                 'total_gross'   => $group['total_gross'],
                 'deposit'       => $dep,
             ];
+
+            $batchDeposits[] = [
+                'location_name' => $locName,
+                'total_gross'   => $group['total_gross'],
+                'deposit'       => $dep,
+            ];
         } catch (Throwable $e) {
+            $batchHadErrors = true;
             $errors[] = 'Error creating QBO Deposit for batch ' . $batchId .
                 ' / Location ' . ($locName ?: '(no location)') . ': ' . $e->getMessage();
         }
     }
+
+    // Only mark the batch as synced if we created at least one deposit and had no errors
+    if (!$batchHadErrors && !empty($batchDeposits)) {
+        try {
+            mark_synced_batch($pdo, $batchId);
+        } catch (Throwable $e) {
+            $errors[] = 'Error marking batch ' . $batchId . ' as synced: ' . $e->getMessage();
+            $batchHadErrors = true;
+        }
+    }
+
+    // Add per-batch summary for UI/inspection
+    $batchSummaries[] = [
+        'batch_id'  => $batchId,
+        'committed' => $committedAt instanceof DateTimeInterface ? $committedAt->format(DateTimeInterface::ATOM) : null,
+        'status'    => $batchHadErrors ? 'partial-error' : (!empty($batchDeposits) ? 'synced' : 'no-deposits'),
+        'deposits'  => $batchDeposits,
+    ];
 }
 
 // Move the batch sync window forward to the end of this run
