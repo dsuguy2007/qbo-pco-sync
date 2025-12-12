@@ -454,7 +454,7 @@ $syncSummaries['registrations']  = load_sync_summary($pdo, 'last_registrations_s
                     <div class="eyebrow">Connections</div>
                     <p class="section-title">Manage credentials and mappings</p>
                 </div>
-                <a href="oauth-start.php" class="btn">
+                <a href="oauth-start.php" class="btn <?= $qboConnected ? 'secondary disabled' : '' ?>" style="<?= $qboConnected ? 'pointer-events: none; opacity: 0.6;' : '' ?>">
                     <?= $qboConnected ? 'Reconnect QuickBooks' : 'Connect QuickBooks' ?>
                 </a>
             </div>

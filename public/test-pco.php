@@ -177,6 +177,7 @@ try {
         <h1>Planning Center Funds Test</h1>
         <p class="lede">Verify PCO credentials and list available funds for mapping.</p>
     </div>
+    <p><a class="btn secondary" href="index.php" style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.55rem 0.9rem;border-radius:10px;border:1px solid var(--border);text-decoration:none;color:var(--text);">← Back to dashboard</a></p>
 
     <?php if ($error): ?>
         <div class="card">
