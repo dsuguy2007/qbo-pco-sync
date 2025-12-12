@@ -627,14 +627,20 @@ if ($enableBatchSync !== '1') {
 
 $nowUtc       = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 $lastBatchStr = get_setting($pdo, 'last_batch_sync_completed_at');
+$backfillDays = isset($_GET['backfill_days']) ? max(1, min(90, (int)$_GET['backfill_days'])) : 7;
+$resetWindow  = isset($_GET['reset_window']) && $_GET['reset_window'] === '1';
+$defaultSince = $nowUtc->sub(new DateInterval('P' . $backfillDays . 'D'));
 
-if ($lastBatchStr) {
+if ($resetWindow) {
+    $sinceUtc = $defaultSince;
+} elseif ($lastBatchStr) {
     try {
         $sinceUtc = new DateTimeImmutable($lastBatchStr);
     } catch (Throwable $e) {
-        $sinceUtc = $nowUtc;
+        $sinceUtc = $defaultSince;
     }
 } else {
+    // No prior window; set and inform user
     set_setting($pdo, 'last_batch_sync_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
 
     $summary = 'Initial batch sync run: window initialized, no batches processed.';
@@ -653,11 +659,17 @@ if ($lastBatchStr) {
             (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>).
             No historical batches were synced. Next run will pick up batches committed after this time.
         </p>
+        <p class="muted">Need to sweep past days? <a href="?reset_window=1&backfill_days=7">Re-run last 7 days</a></p>
     </div>
     <?php
     $content = ob_get_clean();
     renderLayout('PCO -> QBO Batch Sync', 'PCO -> QBO Batch Sync', 'First run initialization', $content);
     exit;
+}
+
+// Guard against future/too-tight window
+if ($sinceUtc >= $nowUtc) {
+    $sinceUtc = $defaultSince;
 }
 
 // ---------------------------------------------------------------------------
@@ -1095,6 +1107,12 @@ ob_start();
         <div>
             <p class="section-title">Summary</p>
             <p class="section-sub">Run overview</p>
+        </div>
+        <div class="muted">
+            Quick window reset:
+            <a href="?reset_window=1&backfill_days=1">24h</a> |
+            <a href="?reset_window=1&backfill_days=7">7d</a> |
+            <a href="?reset_window=1&backfill_days=30">30d</a>
         </div>
     </div>
     <div class="metrics-grid">

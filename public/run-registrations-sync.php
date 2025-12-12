@@ -272,6 +272,7 @@ $processedIds = [];
 $grossTotal = 0.0;
 $feeTotal   = 0.0;
 $pmStats    = ['lines' => 0, 'with_ref' => 0, 'missing' => 0];
+$missingPmIds = [];
 
 foreach ($payments as $pay) {
     $attrs  = $pay['attributes'] ?? [];
@@ -351,6 +352,9 @@ foreach ($payments as $pay) {
         }
     } else {
         $pmStats['missing']++;
+        if (count($missingPmIds) < 5) {
+            $missingPmIds[] = $id;
+        }
     }
     if ($classRef) {
         $line['DepositLineDetail']['ClassRef'] = $classRef;
@@ -440,6 +444,7 @@ $summaryData = [
     'payment_method_lines_total' => $pmStats['lines'],
     'payment_method_lines_with_ref' => $pmStats['with_ref'],
     'payment_method_missing'        => $pmStats['missing'],
+    'missing_payment_ids'           => $missingPmIds,
     'errors'    => $errors,
 ];
 set_setting($pdo, 'last_registrations_sync_summary', json_encode($summaryData));
@@ -500,19 +505,24 @@ set_setting($pdo, 'last_registrations_sync_summary', json_encode($summaryData));
         </div>
     <?php endif; ?>
 
-    <div class="card">
-        <p class="muted">
-            Window used (created_at):
-            <strong><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
-            to
-            <strong><?= htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
-            (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)
-        </p>
-        <table>
-            <tr><th>Payments processed</th><td><?= count($processedIds) ?></td></tr>
-            <tr><th>Gross</th><td>$<?= number_format($grossTotal, 2) ?></td></tr>
-            <tr><th>Fees</th><td>$<?= number_format($feeTotal, 2) ?></td></tr>
-            <tr><th>Net</th><td>$<?= number_format($grossTotal - $feeTotal, 2) ?></td></tr>
+<div class="card">
+    <p class="muted">
+        Window used (created_at):
+        <strong><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
+        to
+        <strong><?= htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
+        (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)
+    </p>
+    <p class="muted">Quick window reset:
+        <a href="?reset_window=1&backfill_days=1">24h</a> |
+        <a href="?reset_window=1&backfill_days=7">7d</a> |
+        <a href="?reset_window=1&backfill_days=30">30d</a>
+    </p>
+    <table>
+        <tr><th>Payments processed</th><td><?= count($processedIds) ?></td></tr>
+        <tr><th>Gross</th><td>$<?= number_format($grossTotal, 2) ?></td></tr>
+        <tr><th>Fees</th><td>$<?= number_format($feeTotal, 2) ?></td></tr>
+        <tr><th>Net</th><td>$<?= number_format($grossTotal - $feeTotal, 2) ?></td></tr>
             <?php if ($depositResult): ?>
                 <tr><th>QBO Deposit Id</th><td><?= htmlspecialchars((string)($depositResult['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td></tr>
             <?php endif; ?>
