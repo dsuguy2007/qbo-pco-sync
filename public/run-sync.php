@@ -31,7 +31,6 @@ function get_setting(PDO $pdo, string $key): ?string
  */
 function set_setting(PDO $pdo, string $key, string $value): void
 {
-    // Ensure only one row per setting_key
     $stmt = $pdo->prepare('DELETE FROM sync_settings WHERE setting_key = :key');
     $stmt->execute([':key' => $key]);
 
@@ -45,9 +44,6 @@ function set_setting(PDO $pdo, string $key, string $value): void
 /**
  * Build a deterministic fingerprint for a Stripe deposit so we can avoid
  * creating duplicates if the sync is re-run.
- *
- * We intentionally only hash the location key, bank account id, and line
- * details (amounts/classes), not volatile fields like TxnDate.
  */
 function build_stripe_deposit_fingerprint(array $deposit, string $locKey): string
 {
@@ -94,6 +90,259 @@ function mark_synced_stripe_deposit(PDO $pdo, string $fingerprint): void
     ]);
 }
 
+/**
+ * Render shared layout with the polished UI.
+ */
+function renderLayout(string $title, string $heroTitle, string $lede, string $content): void
+{
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title><?= htmlspecialchars($title, ENT_QUOTES, 'UTF-8') ?></title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700&display=swap');
+            :root {
+                --bg: #0b1224;
+                --panel: rgba(15, 25, 46, 0.78);
+                --card: rgba(22, 32, 55, 0.9);
+                --border: rgba(255, 255, 255, 0.08);
+                --text: #e9eef7;
+                --muted: #9daccc;
+                --accent: #2ea8ff;
+                --accent-strong: #0d7adf;
+                --success: #39d98a;
+                --warn: #f2c94c;
+                --error: #ff7a7a;
+            }
+            body {
+                font-family: 'Manrope', 'Segoe UI', sans-serif;
+                margin: 0;
+                background: radial-gradient(circle at 15% 20%, rgba(46, 168, 255, 0.12), transparent 25%),
+                            radial-gradient(circle at 85% 10%, rgba(57, 217, 138, 0.15), transparent 22%),
+                            radial-gradient(circle at 70% 70%, rgba(242, 201, 76, 0.08), transparent 30%),
+                            var(--bg);
+                color: var(--text);
+                min-height: 100vh;
+            }
+            * { box-sizing: border-box; }
+            .page {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 2.4rem 1.25rem 3rem;
+            }
+            .hero {
+                background: var(--panel);
+                border: 1px solid var(--border);
+                border-radius: 18px;
+                padding: 1.4rem 1.5rem;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+                position: relative;
+                overflow: hidden;
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 1rem;
+                flex-wrap: wrap;
+            }
+            .hero::after {
+                content: '';
+                position: absolute;
+                inset: 0;
+                background: radial-gradient(circle at 30% 40%, rgba(46,168,255,0.15), transparent 35%),
+                            radial-gradient(circle at 80% 10%, rgba(57,217,138,0.12), transparent 35%);
+                pointer-events: none;
+            }
+            .hero > * { position: relative; z-index: 1; }
+            .eyebrow {
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                color: var(--muted);
+                font-size: 0.8rem;
+                margin-bottom: 0.25rem;
+            }
+            h1 {
+                margin: 0 0 0.35rem;
+                font-size: 2rem;
+                letter-spacing: -0.01em;
+            }
+            .lede {
+                color: var(--muted);
+                margin: 0;
+                max-width: 64ch;
+                line-height: 1.6;
+            }
+            .btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 0.5rem;
+                padding: 0.65rem 1rem;
+                background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+                color: #0b1324;
+                font-weight: 700;
+                text-decoration: none;
+                border-radius: 10px;
+                border: 1px solid rgba(255,255,255,0.08);
+                box-shadow: 0 10px 25px rgba(13,122,223,0.35);
+                transition: transform 120ms ease, box-shadow 120ms ease, background 150ms ease;
+                cursor: pointer;
+                border: none;
+            }
+            .btn:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 14px 30px rgba(13,122,223,0.4);
+            }
+            .btn.secondary {
+                background: transparent;
+                color: var(--text);
+                border: 1px solid var(--border);
+                box-shadow: none;
+            }
+            .flash {
+                margin-top: 1rem;
+                padding: 0.85rem 1rem;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                display: grid;
+                grid-template-columns: auto 1fr;
+                gap: 0.75rem;
+                align-items: center;
+            }
+            .flash.success { background: rgba(57, 217, 138, 0.12); border-color: rgba(57, 217, 138, 0.35); }
+            .flash.error { background: rgba(255, 122, 122, 0.12); border-color: rgba(255, 122, 122, 0.35); }
+            .flash .tag {
+                background: rgba(255, 255, 255, 0.06);
+                padding: 0.35rem 0.65rem;
+                border-radius: 999px;
+                font-size: 0.85rem;
+                border: 1px solid var(--border);
+            }
+            .card {
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 14px;
+                padding: 1.2rem 1.25rem;
+                box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+                margin-top: 1rem;
+            }
+            .section-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                flex-wrap: wrap;
+                margin-bottom: 0.85rem;
+            }
+            .section-title {
+                margin: 0;
+                font-size: 1.1rem;
+                letter-spacing: -0.01em;
+            }
+            .section-sub {
+                margin: 0;
+                color: var(--muted);
+                font-size: 0.95rem;
+            }
+            .metrics-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                gap: 0.75rem;
+            }
+            .metric {
+                padding: 0.95rem 1rem;
+                border-radius: 12px;
+                border: 1px solid var(--border);
+                background: rgba(255,255,255,0.02);
+            }
+            .metric .label {
+                color: var(--muted);
+                font-size: 0.9rem;
+                margin-bottom: 0.2rem;
+            }
+            .metric .value {
+                font-size: 1.25rem;
+                font-weight: 700;
+            }
+            .table-wrap {
+                overflow: auto;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                margin-top: 0.5rem;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                min-width: 860px;
+                background: rgba(255,255,255,0.01);
+            }
+            th, td {
+                border-bottom: 1px solid rgba(255,255,255,0.08);
+                padding: 0.65rem 0.75rem;
+                vertical-align: top;
+                font-size: 0.95rem;
+                text-align: left;
+            }
+            th {
+                color: var(--muted);
+                font-weight: 700;
+                background: rgba(255,255,255,0.03);
+                position: sticky;
+                top: 0;
+                backdrop-filter: blur(8px);
+                z-index: 1;
+            }
+            tr:hover td {
+                background: rgba(46,168,255,0.03);
+            }
+            .muted { color: var(--muted); font-size: 0.95rem; line-height: 1.5; }
+            .pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+                padding: 0.35rem 0.65rem;
+                border-radius: 999px;
+                font-size: 0.85rem;
+                font-weight: 700;
+                color: #0f172a;
+            }
+            .pill.ok { background: rgba(57, 217, 138, 0.9); }
+            .pill.warn { background: rgba(242, 201, 76, 0.9); }
+            .pill.error { background: rgba(255, 122, 122, 0.9); }
+            .actions {
+                display: flex;
+                justify-content: flex-start;
+                gap: 0.75rem;
+                flex-wrap: wrap;
+                margin-top: 1rem;
+            }
+            @media (max-width: 720px) {
+                .hero { padding: 1.2rem 1.1rem; }
+                .section-header { align-items: flex-start; }
+                .btn.secondary { width: 100%; justify-content: center; }
+                .btn.primary { width: 100%; }
+            }
+        </style>
+    </head>
+    <body>
+    <div class="page">
+        <div class="hero">
+            <div>
+                <div class="eyebrow">Sync</div>
+                <h1><?= htmlspecialchars($heroTitle, ENT_QUOTES, 'UTF-8') ?></h1>
+                <p class="lede"><?= htmlspecialchars($lede, ENT_QUOTES, 'UTF-8') ?></p>
+            </div>
+            <a class="btn secondary" href="index.php">&larr; Back to dashboard</a>
+        </div>
+
+        <?= $content ?>
+    </div>
+    </body>
+    </html>
+    <?php
+}
+
 // --- Bootstrap DB / clients --------------------------------------------------
 
 try {
@@ -129,75 +378,55 @@ $service = new SyncService($pdo, $pco);
 // --- Determine sync window ---------------------------------------------------
 
 $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-
-// last_completed_at is stored as ISO8601 in UTC.
 $lastSyncStr = get_setting($pdo, 'last_completed_at');
 
 if ($lastSyncStr === null) {
-    // First run: we *intentionally* do NOT backfill history.
-    // We set last_completed_at to "now" and exit.
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+
+    ob_start();
     ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>PCO &rarr; QBO Sync</title>
-    <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-        .muted { font-size: 0.9rem; color: #666; }
-    </style>
-</head>
-<body>
-<h1>PCO &rarr; QBO Sync</h1>
-<p>This is the first time the Stripe sync has been run.</p>
-<p class="muted">
-    We have recorded the current time as the starting point for future syncs:
-    <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>.
-    No historical donations were imported.
-</p>
-<p><a href="index.php">&larr; Back to dashboard</a></p>
-</body>
-</html>
-<?php
+    <div class="card">
+        <div class="section-header">
+            <div>
+                <p class="section-title">First run</p>
+                <p class="section-sub">We recorded the current time as the starting point for future syncs.</p>
+            </div>
+        </div>
+        <p class="muted">
+            No historical donations were imported. Starting from
+            <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>.
+        </p>
+    </div>
+    <?php
+    $content = ob_get_clean();
+    renderLayout('PCO -> QBO Sync', 'PCO -> QBO Sync', 'Initialize sync window', $content);
     exit;
 }
 
 try {
     $sinceUtc = new DateTimeImmutable($lastSyncStr);
 } catch (Throwable $e) {
-    // If the stored value is bad, fall back to "now" and don't sync anything.
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+
+    ob_start();
     ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>PCO &rarr; QBO Sync</title>
-    <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-        .error { padding: 0.6rem 0.8rem; background: #ffecec; border: 1px solid #ffaeae; margin-bottom: 1rem; }
-        .muted { font-size: 0.9rem; color: #666; }
-    </style>
-</head>
-<body>
-<h1>PCO &rarr; QBO Sync</h1>
-<div class="error">
-    <strong>Invalid last_completed_at value was stored.</strong>
-    We reset it to now without importing any donations.
-</div>
-<p class="muted">
-    New value:
-    <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
-</p>
-<p><a href="index.php">&larr; Back to dashboard</a></p>
-</body>
-</html>
-<?php
+    <div class="flash error">
+        <span class="tag">Issue</span>
+        <div><strong>Invalid last_completed_at value was stored.</strong> We reset it to now without importing any donations.</div>
+    </div>
+    <div class="card">
+        <p class="muted">
+            New value:
+            <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
+        </p>
+    </div>
+    <?php
+    $content = ob_get_clean();
+    renderLayout('PCO -> QBO Sync', 'PCO -> QBO Sync', 'Invalid sync window', $content);
     exit;
 }
 
-// --- Build preview of what we *would* deposit --------------------------------
+// --- Build preview of what we would deposit ---------------------------------
 
 try {
     $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
@@ -211,28 +440,23 @@ try {
 // If there are no funds to deposit, simply move the window forward.
 if (empty($preview['funds'])) {
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+
+    ob_start();
     ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>PCO &rarr; QBO Sync</title>
-    <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-        .muted { font-size: 0.9rem; color: #666; }
-    </style>
-</head>
-<body>
-<h1>PCO &rarr; QBO Sync</h1>
-<p>No eligible Stripe donations were found to sync in this window.</p>
-<p class="muted">
-    Last completed sync window is now set to:
-    <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong> (based on completed_at).
-</p>
-<p><a href="index.php">&larr; Back to dashboard</a></p>
-</body>
-</html>
-<?php
+    <div class="flash success">
+        <span class="tag">Info</span>
+        <div>No eligible Stripe donations were found to sync in this window.</div>
+    </div>
+    <div class="card">
+        <p class="muted">
+            Last completed sync window is now set to
+            <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
+            (based on completed_at).
+        </p>
+    </div>
+    <?php
+    $content = ob_get_clean();
+    renderLayout('PCO -> QBO Sync', 'PCO -> QBO Sync', 'No donations found', $content);
     exit;
 }
 
@@ -268,14 +492,13 @@ try {
 
 $locationGroups = [];
 
-/** @var array $row */
 foreach ($preview['funds'] as $row) {
     $locName = trim((string)($row['qbo_location_name'] ?? ''));
     $locKey  = $locName !== '' ? $locName : '__NO_LOCATION__';
 
     if (!isset($locationGroups[$locKey])) {
         $locationGroups[$locKey] = [
-            'location_name' => $locName,   // '' means "no location"
+            'location_name' => $locName,
             'funds'         => [],
             'total_gross'   => 0.0,
             'total_fee'     => 0.0,
@@ -295,7 +518,6 @@ if (empty($errors)) {
     foreach ($locationGroups as $locKey => $group) {
         $locName = $group['location_name'];
 
-        // Look up QBO Department (Location) if one is mapped
         $deptRef = null;
         if ($locName !== '') {
             try {
@@ -320,27 +542,24 @@ if (empty($errors)) {
             $fundName  = $fundRow['pco_fund_name'];
             $className = $fundRow['qbo_class_name'];
 
-            // Look up QBO Class per fund, if mapped
             $classId = null;
             if ($className) {
                 try {
                     $classObj = $qbo->getClassByName($className);
                     if (!$classObj) {
                         $errors[] = "Could not find QBO Class for fund '{$fundName}' (expected: '{$className}').";
-                        continue 2; // skip this entire location
+                        continue 2;
                     }
                     $classId = (string)$classObj['Id'];
                 } catch (Throwable $e) {
                     $errors[] = 'Error looking up QBO Class for fund ' . $fundName . ': ' . $e->getMessage();
-                    continue 2; // skip this entire location
+                    continue 2;
                 }
             }
 
             $gross = (float)$fundRow['gross'];
             $fee   = (float)$fundRow['fee'];
-            $net   = (float)$fundRow['net'];
 
-            // Gross line (income)
             $line = [
                 'Amount'     => round($gross, 2),
                 'DetailType' => 'DepositLineDetail',
@@ -359,10 +578,9 @@ if (empty($errors)) {
             }
             $lines[] = $line;
 
-            // Fee line (negative)
             if ($fee !== 0.0) {
                 $feeLine = [
-                    'Amount'     => round($fee, 2), // fee is negative in preview
+                    'Amount'     => round($fee, 2),
                     'DetailType' => 'DepositLineDetail',
                     'DepositLineDetail' => [
                         'AccountRef' => [
@@ -385,7 +603,6 @@ if (empty($errors)) {
             continue;
         }
 
-        // Build Deposit payload according to QBO spec
         $deposit = [
             'TxnDate' => $nowUtc->format('Y-m-d'),
             'PrivateNote' => 'PCO Stripe sync: completed_at ' .
@@ -399,15 +616,12 @@ if (empty($errors)) {
             'Line' => $lines,
         ];
 
-        // One DepartmentRef (Location) per Deposit, per QBO rules
         if ($deptRef !== null) {
             $deposit['DepartmentRef'] = $deptRef;
         }
 
-        // --- Idempotency: skip if we've already created an identical Stripe deposit
         $fingerprint = build_stripe_deposit_fingerprint($deposit, (string)$locKey);
         if (has_synced_stripe_deposit($pdo, $fingerprint)) {
-            // Record that we saw this deposit but skipped it to avoid duplicates
             $createdDeposits[] = [
                 'location_name' => $locName,
                 'total_gross'   => $group['total_gross'],
@@ -423,7 +637,6 @@ if (empty($errors)) {
             $resp = $qbo->createDeposit($deposit);
             $dep  = $resp['Deposit'] ?? null;
 
-            // Mark this deposit as synced so re-runs don't double-book it
             mark_synced_stripe_deposit($pdo, $fingerprint);
 
             $createdDeposits[] = [
@@ -440,106 +653,123 @@ if (empty($errors)) {
     }
 }
 
-// Only move the sync window forward if everything succeeded
 if (empty($errors) && !empty($createdDeposits)) {
     set_setting($pdo, 'last_completed_at', $preview['until']->format(DateTimeInterface::ATOM));
 }
 
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>PCO &rarr; QBO Stripe Sync Result</title>
-    <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-        .ok { padding: 0.6rem 0.8rem; background: #e6ffed; border: 1px solid #b7eb8f; margin-bottom: 1rem; }
-        .error { padding: 0.6rem 0.8rem; background: #ffecec; border: 1px solid #ffaeae; margin-bottom: 1rem; }
-        table { border-collapse: collapse; width: 100%; max-width: 900px; }
-        th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; font-size: 0.9rem; text-align: left; }
-        th { background: #f5f5f5; }
-        .muted { font-size: 0.85rem; color: #666; }
-    </style>
-</head>
-<body>
-<h1>PCO &rarr; QBO Stripe Sync Result</h1>
+// --- Render result -----------------------------------------------------------
 
-<?php if (!empty($errors)): ?>
-    <div class="error">
-        <strong>Sync completed with errors.</strong>
-        <ul>
-            <?php foreach ($errors as $err): ?>
-                <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
-            <?php endforeach; ?>
-        </ul>
-        <?php if (!empty($createdDeposits)): ?>
-            <p class="muted">
-                Some deposits may have been created in QuickBooks before the errors occurred.
-                Review QBO and adjust the <code>last_completed_at</code> setting if you need to rerun this window.
-            </p>
-        <?php endif; ?>
+ob_start();
+
+if (!empty($errors)): ?>
+    <div class="flash error">
+        <span class="tag">Issues</span>
+        <div>
+            <strong>Sync completed with errors.</strong>
+            <ul>
+                <?php foreach ($errors as $err): ?>
+                    <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
+                <?php endforeach; ?>
+            </ul>
+            <?php if (!empty($createdDeposits)): ?>
+                <p class="muted">
+                    Some deposits may have been created in QuickBooks before the errors occurred.
+                    Review QBO and adjust the <code>last_completed_at</code> setting if you need to rerun this window.
+                </p>
+            <?php endif; ?>
+        </div>
     </div>
 <?php else: ?>
-    <?php if (!empty($createdDeposits)): ?>
-        <div class="ok">
-            <strong><?= count($createdDeposits) ?> deposit(s) created or already present in QuickBooks.</strong>
+    <div class="flash success">
+        <span class="tag">Success</span>
+        <div>
+            <?php if (!empty($createdDeposits)): ?>
+                <strong><?= count($createdDeposits) ?> deposit(s) created or already present in QuickBooks.</strong>
+            <?php else: ?>
+                <strong>No deposits were created.</strong>
+            <?php endif; ?>
         </div>
-    <?php else: ?>
-        <div class="ok">
-            <strong>No deposits were created.</strong>
-        </div>
-    <?php endif; ?>
+    </div>
 <?php endif; ?>
 
-<h2>Window used</h2>
-<p class="muted">
-    Completed_at from
-    <strong><?= htmlspecialchars($preview['since']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></strong>
-    to
-    <strong><?= htmlspecialchars($preview['until']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></strong>
-</p>
+<div class="card">
+    <div class="section-header">
+        <div>
+            <p class="section-title">Window used</p>
+            <p class="section-sub">completed_at range</p>
+        </div>
+    </div>
+    <div class="metrics-grid">
+        <div class="metric">
+            <div class="label">From (UTC)</div>
+            <div class="value"><?= htmlspecialchars($preview['since']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+        <div class="metric">
+            <div class="label">To (UTC)</div>
+            <div class="value"><?= htmlspecialchars($preview['until']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+        <div class="metric">
+            <div class="label">Fund rows processed</div>
+            <div class="value"><?= count($preview['funds']) ?></div>
+        </div>
+    </div>
+</div>
 
 <?php if (!empty($createdDeposits)): ?>
-    <h2>Deposits by Location</h2>
-    <table>
-        <thead>
-        <tr>
-            <th>Location</th>
-            <th>QBO Deposit Id</th>
-            <th>TxnDate</th>
-            <th>QBO Total</th>
-            <th>Gross</th>
-            <th>Fees</th>
-            <th>Net</th>
-        </tr>
-        </thead>
-        <tbody>
-        <?php foreach ($createdDeposits as $cd): ?>
-            <?php
-                $dep     = $cd['deposit'] ?? [];
-                $skipped = $cd['skipped'] ?? false;
-            ?>
-            <tr>
-                <td><?= htmlspecialchars($cd['location_name'] ?: '(no location)', ENT_QUOTES, 'UTF-8') ?></td>
-                <td>
-                    <?php if ($skipped): ?>
-                        <span class="muted">skipped (already synced)</span>
-                    <?php else: ?>
-                        <?= htmlspecialchars((string)($dep['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
-                    <?php endif; ?>
-                </td>
-                <td><?= $skipped ? '' : htmlspecialchars((string)($dep['TxnDate'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
-                <td><?= $skipped ? '' : ('$' . htmlspecialchars((string)($dep['TotalAmt'] ?? ''), ENT_QUOTES, 'UTF-8')) ?></td>
-                <td>$<?= number_format($cd['total_gross'], 2) ?></td>
-                <td>$<?= number_format($cd['total_fee'], 2) ?></td>
-                <td>$<?= number_format($cd['total_net'], 2) ?></td>
-            </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
+    <div class="card">
+        <div class="section-header">
+            <div>
+                <p class="section-title">Deposits by Location</p>
+                <p class="section-sub">Created or skipped if already synced</p>
+            </div>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Location</th>
+                    <th>QBO Deposit Id</th>
+                    <th>TxnDate</th>
+                    <th>QBO Total</th>
+                    <th>Gross</th>
+                    <th>Fees</th>
+                    <th>Net</th>
+                </tr>
+                </thead>
+                <tbody>
+                <?php foreach ($createdDeposits as $cd): ?>
+                    <?php
+                    $dep     = $cd['deposit'] ?? [];
+                    $skipped = $cd['skipped'] ?? false;
+                    ?>
+                    <tr>
+                        <td><?= htmlspecialchars($cd['location_name'] ?: '(no location)', ENT_QUOTES, 'UTF-8') ?></td>
+                        <td>
+                            <?php if ($skipped): ?>
+                                <span class="muted">skipped (already synced)</span>
+                            <?php else: ?>
+                                <?= htmlspecialchars((string)($dep['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
+                            <?php endif; ?>
+                        </td>
+                        <td><?= $skipped ? '' : htmlspecialchars((string)($dep['TxnDate'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                        <td><?= $skipped ? '' : ('$' . htmlspecialchars((string)($dep['TotalAmt'] ?? ''), ENT_QUOTES, 'UTF-8')) ?></td>
+                        <td>$<?= number_format($cd['total_gross'], 2) ?></td>
+                        <td>$<?= number_format($cd['total_fee'], 2) ?></td>
+                        <td>$<?= number_format($cd['total_net'], 2) ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
 <?php endif; ?>
 
-<p style="margin-top:1.5rem;"><a href="index.php">&larr; Back to dashboard</a></p>
+<div class="actions">
+    <a class="btn secondary" href="run-sync-preview.php">View sync preview</a>
+    <a class="btn secondary" href="settings.php">Adjust settings</a>
+</div>
 
-</body>
-</html>
+<?php
+$content = ob_get_clean();
+
+renderLayout('PCO -> QBO Stripe Sync Result', 'PCO -> QBO Stripe Sync Result', 'Manual run of Stripe donation deposits', $content);

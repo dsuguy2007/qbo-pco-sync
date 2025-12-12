@@ -7,21 +7,231 @@ require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/QboClient.php';
 require_once __DIR__ . '/../src/Auth.php';
 require_once __DIR__ . '/../src/SyncLogger.php';
-require_once __DIR__ . '/../src/Mailer.php'; 
+require_once __DIR__ . '/../src/Mailer.php';
 
 Auth::requireLogin();
 
-/**
- * Read a setting from the sync_settings table.
- */
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function renderLayout(string $title, string $heroTitle, string $lede, string $content): void
+{
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title><?= htmlspecialchars($title, ENT_QUOTES, 'UTF-8') ?></title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700&display=swap');
+            :root {
+                --bg: #0b1224;
+                --panel: rgba(15, 25, 46, 0.78);
+                --card: rgba(22, 32, 55, 0.9);
+                --border: rgba(255, 255, 255, 0.08);
+                --text: #e9eef7;
+                --muted: #9daccc;
+                --accent: #2ea8ff;
+                --accent-strong: #0d7adf;
+                --success: #39d98a;
+                --warn: #f2c94c;
+                --error: #ff7a7a;
+            }
+            body {
+                font-family: 'Manrope', 'Segoe UI', sans-serif;
+                margin: 0;
+                background: radial-gradient(circle at 15% 20%, rgba(46, 168, 255, 0.12), transparent 25%),
+                            radial-gradient(circle at 85% 10%, rgba(57, 217, 138, 0.15), transparent 22%),
+                            radial-gradient(circle at 70% 70%, rgba(242, 201, 76, 0.08), transparent 30%),
+                            var(--bg);
+                color: var(--text);
+                min-height: 100vh;
+            }
+            * { box-sizing: border-box; }
+            .page {
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 2.4rem 1.25rem 3rem;
+            }
+            .hero {
+                background: var(--panel);
+                border: 1px solid var(--border);
+                border-radius: 18px;
+                padding: 1.4rem 1.5rem;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+                position: relative;
+                overflow: hidden;
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 1rem;
+                flex-wrap: wrap;
+            }
+            .hero::after {
+                content: '';
+                position: absolute;
+                inset: 0;
+                background: radial-gradient(circle at 30% 40%, rgba(46,168,255,0.15), transparent 35%),
+                            radial-gradient(circle at 80% 10%, rgba(57,217,138,0.12), transparent 35%);
+                pointer-events: none;
+            }
+            .hero > * { position: relative; z-index: 1; }
+            .eyebrow {
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                color: var(--muted);
+                font-size: 0.8rem;
+                margin-bottom: 0.25rem;
+            }
+            h1 {
+                margin: 0 0 0.35rem;
+                font-size: 2rem;
+                letter-spacing: -0.01em;
+            }
+            .lede {
+                color: var(--muted);
+                margin: 0;
+                max-width: 64ch;
+                line-height: 1.6;
+            }
+            .btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 0.5rem;
+                padding: 0.65rem 1rem;
+                background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+                color: #0b1324;
+                font-weight: 700;
+                text-decoration: none;
+                border-radius: 10px;
+                border: 1px solid rgba(255,255,255,0.08);
+                box-shadow: 0 10px 25px rgba(13,122,223,0.35);
+                transition: transform 120ms ease, box-shadow 120ms ease, background 150ms ease;
+                cursor: pointer;
+                border: none;
+            }
+            .btn:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 14px 30px rgba(13,122,223,0.4);
+            }
+            .btn.secondary {
+                background: transparent;
+                color: var(--text);
+                border: 1px solid var(--border);
+                box-shadow: none;
+            }
+            .flash {
+                margin-top: 1rem;
+                padding: 0.85rem 1rem;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                display: grid;
+                grid-template-columns: auto 1fr;
+                gap: 0.75rem;
+                align-items: center;
+            }
+            .flash.success { background: rgba(57, 217, 138, 0.12); border-color: rgba(57, 217, 138, 0.35); }
+            .flash.error { background: rgba(255, 122, 122, 0.12); border-color: rgba(255, 122, 122, 0.35); }
+            .flash .tag {
+                background: rgba(255, 255, 255, 0.06);
+                padding: 0.35rem 0.65rem;
+                border-radius: 999px;
+                font-size: 0.85rem;
+                border: 1px solid var(--border);
+            }
+            .card {
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 14px;
+                padding: 1.2rem 1.25rem;
+                box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+                margin-top: 1rem;
+            }
+            .section-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                flex-wrap: wrap;
+                margin-bottom: 0.85rem;
+            }
+            .section-title { margin: 0; font-size: 1.1rem; letter-spacing: -0.01em; }
+            .section-sub { margin: 0; color: var(--muted); font-size: 0.95rem; }
+            .metrics-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                gap: 0.75rem;
+            }
+            .metric {
+                padding: 0.95rem 1rem;
+                border-radius: 12px;
+                border: 1px solid var(--border);
+                background: rgba(255,255,255,0.02);
+            }
+            .metric .label { color: var(--muted); font-size: 0.9rem; margin-bottom: 0.2rem; }
+            .metric .value { font-size: 1.25rem; font-weight: 700; }
+            .table-wrap {
+                overflow: auto;
+                border-radius: 10px;
+                border: 1px solid var(--border);
+                margin-top: 0.5rem;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                min-width: 820px;
+                background: rgba(255,255,255,0.01);
+            }
+            th, td {
+                border-bottom: 1px solid rgba(255,255,255,0.08);
+                padding: 0.65rem 0.75rem;
+                vertical-align: top;
+                font-size: 0.95rem;
+                text-align: left;
+            }
+            th {
+                color: var(--muted);
+                font-weight: 700;
+                background: rgba(255,255,255,0.03);
+                position: sticky;
+                top: 0;
+                backdrop-filter: blur(8px);
+                z-index: 1;
+            }
+            tr:hover td { background: rgba(46,168,255,0.03); }
+            .muted { color: var(--muted); font-size: 0.95rem; line-height: 1.5; }
+            .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
+            @media (max-width: 720px) {
+                .hero { padding: 1.2rem 1.1rem; }
+                .section-header { align-items: flex-start; }
+                .btn.secondary { width: 100%; justify-content: center; }
+            }
+        </style>
+    </head>
+    <body>
+    <div class="page">
+        <div class="hero">
+            <div>
+                <div class="eyebrow">Batch Sync</div>
+                <h1><?= htmlspecialchars($heroTitle, ENT_QUOTES, 'UTF-8') ?></h1>
+                <p class="lede"><?= htmlspecialchars($lede, ENT_QUOTES, 'UTF-8') ?></p>
+            </div>
+            <a class="btn secondary" href="index.php">&larr; Back to dashboard</a>
+        </div>
+
+        <?= $content ?>
+    </div>
+    </body>
+    </html>
+    <?php
+}
+
 function get_setting(PDO $pdo, string $key): ?string
 {
     $stmt = $pdo->prepare(
-        'SELECT setting_value 
-           FROM sync_settings 
-          WHERE setting_key = :key 
-          ORDER BY id DESC 
-          LIMIT 1'
+        'SELECT setting_value FROM sync_settings WHERE setting_key = :key ORDER BY id DESC LIMIT 1'
     );
     $stmt->execute([':key' => $key]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -31,17 +241,13 @@ function get_setting(PDO $pdo, string $key): ?string
     return null;
 }
 
-/**
- * Write a setting to the sync_settings table (one row per key).
- */
 function set_setting(PDO $pdo, string $key, string $value): void
 {
     $stmt = $pdo->prepare('DELETE FROM sync_settings WHERE setting_key = :key');
     $stmt->execute([':key' => $key]);
 
     $stmt = $pdo->prepare(
-        'INSERT INTO sync_settings (setting_key, setting_value) 
-         VALUES (:key, :value)'
+        'INSERT INTO sync_settings (setting_key, setting_value) VALUES (:key, :value)'
     );
     $stmt->execute([
         ':key'   => $key,
@@ -49,31 +255,21 @@ function set_setting(PDO $pdo, string $key, string $value): void
     ]);
 }
 
-/**
- * Check if a PCO batch has already been synced to QBO.
- */
 function has_synced_batch(PDO $pdo, string $batchId): bool
 {
-    $stmt = $pdo->prepare(
-        'SELECT 1 FROM synced_batches WHERE batch_id = :id LIMIT 1'
-    );
+    $stmt = $pdo->prepare('SELECT 1 FROM synced_batches WHERE batch_id = :id LIMIT 1');
     $stmt->execute([':id' => $batchId]);
     return (bool)$stmt->fetchColumn();
 }
 
-/**
- * Mark a PCO batch as synced to QBO.
- */
 function mark_synced_batch(PDO $pdo, string $batchId): void
 {
     $stmt = $pdo->prepare(
-        'INSERT IGNORE INTO synced_batches (batch_id, created_at)
-               VALUES (:id, :created_at)'
+        'INSERT IGNORE INTO synced_batches (batch_id, created_at) VALUES (:id, :created_at)'
     );
     $stmt->execute([
         ':id'         => $batchId,
-        ':created_at' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))
-            ->format('Y-m-d H:i:s'),
+        ':created_at' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s'),
     ]);
 }
 
@@ -93,9 +289,8 @@ function send_sync_email_if_needed(
     $from   = $config['mail']['from'] ?? null;
     $mailer = new Mailer($from);
 
-    $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-
-    $subject = "[PCO→QBO] {$syncLabel} sync " . strtoupper($status);
+    $nowUtc  = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    $subject = "[PCO->QBO] {$syncLabel} sync " . strtoupper($status);
     $bodyLines = [
         "{$syncLabel} sync run on " . $nowUtc->format('Y-m-d H:i:s T'),
         '',
@@ -112,10 +307,6 @@ function send_sync_email_if_needed(
     $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
 }
 
-
-/**
- * Low-level helper to call the PCO API.
- */
 function pco_request(array $pcoConfig, string $path, array $query = []): array
 {
     $baseUrl = rtrim($pcoConfig['base_url'] ?? 'https://api.planningcenteronline.com', '/');
@@ -150,17 +341,12 @@ function pco_request(array $pcoConfig, string $path, array $query = []): array
 
     $decoded = json_decode($body, true);
     if (!is_array($decoded)) {
-        throw new RuntimeException(
-            'PCO JSON decode error: ' . json_last_error_msg() . ' | Raw body: ' . $body
-        );
+        throw new RuntimeException('PCO JSON decode error: ' . json_last_error_msg() . ' | Raw body: ' . $body);
     }
 
     return $decoded;
 }
 
-/**
- * Fetch committed batches whose committed_at falls between the window.
- */
 function get_committed_batches(
     array $pcoConfig,
     DateTimeImmutable $windowStart,
@@ -181,7 +367,6 @@ function get_committed_batches(
         $attrs        = $batch['attributes'] ?? [];
         $committedStr = $attrs['committed_at'] ?? null;
         if (!$committedStr) {
-            // Not committed yet
             continue;
         }
 
@@ -206,13 +391,8 @@ function get_committed_batches(
     return $batches;
 }
 
-/**
- * Fetch donations belonging to a specific batch, then per-donation designations.
- * We only keep check/cash donations to avoid overlapping Stripe/card flows.
- */
 function get_batch_donations(array $pcoConfig, string $batchId): array
 {
-    // First get the donations in this batch
     $resp = pco_request(
         $pcoConfig,
         '/giving/v2/batches/' . rawurlencode($batchId) . '/donations',
@@ -232,12 +412,10 @@ function get_batch_donations(array $pcoConfig, string $batchId): array
         }
 
         $paymentMethod = (string)($attrs['payment_method'] ?? '');
-        // For batch sync we only want offline giving (cash/check)
         if (!in_array($paymentMethod, ['cash', 'check'], true)) {
             continue;
         }
 
-        // Now fetch designations for this donation via its own endpoint
         $desResp = pco_request(
             $pcoConfig,
             '/giving/v2/donations/' . rawurlencode($id) . '/designations',
@@ -287,8 +465,9 @@ try {
     $pdo = $db->getConnection();
 } catch (Throwable $e) {
     http_response_code(500);
-    echo '<h1>Batch sync error</h1>';
-    echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
+    $content = '<div class="flash error"><span class="tag">Issue</span><div>Database error: ' .
+        htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</div></div>';
+    renderLayout('PCO -> QBO Batch Sync', 'PCO -> QBO Batch Sync', 'Run committed batches to QuickBooks', $content);
     exit;
 }
 
@@ -304,8 +483,8 @@ if (empty($pcoConfig['app_id']) || empty($pcoConfig['secret'])) {
         'Missing pco.app_id or pco.secret in config.php.'
     );
     http_response_code(500);
-    echo '<h1>PCO client error</h1>';
-    echo '<p>PCO credentials are not configured. Please set pco.app_id and pco.secret in config.php.</p>';
+    $content = '<div class="flash error"><span class="tag">Issue</span><div>PCO credentials are not configured. Please set pco.app_id and pco.secret in config.php.</div></div>';
+    renderLayout('PCO -> QBO Batch Sync', 'PCO -> QBO Batch Sync', 'Missing credentials', $content);
     exit;
 }
 
@@ -324,8 +503,9 @@ try {
         $errors[0]
     );
     http_response_code(500);
-    echo '<h1>QBO client error</h1>';
-    echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
+    $content = '<div class="flash error"><span class="tag">Issue</span><div>' .
+        htmlspecialchars($errors[0], ENT_QUOTES, 'UTF-8') . '</div></div>';
+    renderLayout('PCO -> QBO Batch Sync', 'PCO -> QBO Batch Sync', 'Cannot start batch sync', $content);
     exit;
 }
 
@@ -341,26 +521,21 @@ if ($enableBatchSync !== '1') {
         'Batch sync run requested but is disabled in settings.',
         null
     );
+    ob_start();
     ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>PCO → QBO Batch Sync</title>
-        <style>
-            body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-            .muted { font-size: 0.9rem; color: #666; }
-        </style>
-    </head>
-    <body>
-    <h1>PCO → QBO Batch Sync</h1>
-    <p>Batch sync is currently disabled in Settings.</p>
-    <p class="muted">Enable "Sync committed batches" in the Settings page to use this feature.</p>
-    <p><a href="settings.php">&rarr; Go to Settings</a></p>
-    <p><a href="index.php">&larr; Back to dashboard</a></p>
-    </body>
-    </html>
+    <div class="flash error">
+        <span class="tag">Disabled</span>
+        <div>Batch sync is currently disabled in Settings.</div>
+    </div>
+    <div class="card">
+        <p class="muted">Enable "Sync committed batches" in the Settings page to use this feature.</p>
+        <div class="actions">
+            <a class="btn secondary" href="settings.php">Go to Settings</a>
+        </div>
+    </div>
     <?php
+    $content = ob_get_clean();
+    renderLayout('PCO -> QBO Batch Sync', 'PCO -> QBO Batch Sync', 'Run committed batches to QuickBooks', $content);
     exit;
 }
 
@@ -368,8 +543,7 @@ if ($enableBatchSync !== '1') {
 // Determine sync window (based on batch committed_at)
 // ---------------------------------------------------------------------------
 
-$nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-
+$nowUtc       = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 $lastBatchStr = get_setting($pdo, 'last_batch_sync_completed_at');
 
 if ($lastBatchStr) {
@@ -379,35 +553,27 @@ if ($lastBatchStr) {
         $sinceUtc = $nowUtc;
     }
 } else {
-    // First ever batch-sync run: initialize window and exit (no backfill).
     set_setting($pdo, 'last_batch_sync_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
 
     $summary = 'Initial batch sync run: window initialized, no batches processed.';
     $logger->finish($logId, 'success', $summary, null);
 
+    ob_start();
     ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>PCO → QBO Batch Sync</title>
-        <style>
-            body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-            .muted { font-size: 0.9rem; color: #666; }
-        </style>
-    </head>
-    <body>
-    <h1>PCO → QBO Batch Sync</h1>
-    <p>This is the first time batch sync has been run.</p>
-    <p class="muted">
-        We have initialized the batch sync window at
-        <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>.
-        No historical batches were synced. Next run will pick up batches committed after this time.
-    </p>
-    <p><a href="index.php">&larr; Back to dashboard</a></p>
-    </body>
-    </html>
+    <div class="flash success">
+        <span class="tag">Initialized</span>
+        <div>This is the first time batch sync has been run. Window has been set.</div>
+    </div>
+    <div class="card">
+        <p class="muted">
+            Start point:
+            <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>.
+            No historical batches were synced. Next run will pick up batches committed after this time.
+        </p>
+    </div>
     <?php
+    $content = ob_get_clean();
+    renderLayout('PCO -> QBO Batch Sync', 'PCO -> QBO Batch Sync', 'First run initialization', $content);
     exit;
 }
 
@@ -415,20 +581,15 @@ if ($lastBatchStr) {
 // Look up QBO accounts and fund mappings
 // ---------------------------------------------------------------------------
 
-$depositBankName = get_setting($pdo, 'deposit_bank_account_name')
-    ?? 'TRINITY 2000 CHECKING';
-
-$incomeAccountName = get_setting($pdo, 'income_account_name')
-    ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
+$depositBankName  = get_setting($pdo, 'deposit_bank_account_name') ?? 'TRINITY 2000 CHECKING';
+$incomeAccountName = get_setting($pdo, 'income_account_name') ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
 
 try {
-    // Bank account – match by simple Name
     $bankAccount = $qbo->getAccountByName($depositBankName, false);
     if (!$bankAccount) {
         $errors[] = "Could not find deposit bank account in QBO: {$depositBankName}";
     }
 
-    // Income account – match by FullyQualifiedName
     $incomeAccount = $qbo->getAccountByName($incomeAccountName, true);
     if (!$incomeAccount) {
         $errors[] = "Could not find income account in QBO: {$incomeAccountName}";
@@ -437,7 +598,6 @@ try {
     $errors[] = 'Error looking up QBO accounts: ' . $e->getMessage();
 }
 
-// Load fund mappings (fund → location / class)
 $fundMappings = [];
 try {
     $stmt = $pdo->query('SELECT * FROM fund_mappings');
@@ -452,36 +612,26 @@ try {
     $errors[] = 'Error loading fund mappings: ' . $e->getMessage();
 }
 
-// If we already have fatal config errors, stop before PCO calls
 if (!empty($errors) && (empty($bankAccount) || empty($incomeAccount))) {
     $details = implode("\n", $errors);
     $logger->finish($logId, 'error', 'Batch sync configuration error.', $details);
 
+    ob_start();
     ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>PCO → QBO Batch Sync</title>
-        <style>
-            body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-            .error { padding: 0.75rem 1rem; background: #fee; border: 1px solid #f99; margin-bottom: 1rem; }
-        </style>
-    </head>
-    <body>
-    <h1>PCO → QBO Batch Sync</h1>
-    <div class="error">
-        <strong>Batch sync could not start due to configuration errors:</strong>
-        <ul>
-            <?php foreach ($errors as $err): ?>
-                <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
-            <?php endforeach; ?>
-        </ul>
+    <div class="flash error">
+        <span class="tag">Issue</span>
+        <div>
+            <strong>Batch sync could not start due to configuration errors:</strong>
+            <ul>
+                <?php foreach ($errors as $err): ?>
+                    <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
     </div>
-    <p><a href="index.php">&larr; Back to dashboard</a></p>
-    </body>
-    </html>
     <?php
+    $content = ob_get_clean();
+    renderLayout('PCO -> QBO Batch Sync', 'PCO -> QBO Batch Sync', 'Configuration errors', $content);
     exit;
 }
 
@@ -503,9 +653,8 @@ $batchSummaries = [];
 foreach ($batches as $batchInfo) {
     $batchId     = $batchInfo['id'];
     $batchName   = $batchInfo['name'];
-    $committedAt = $batchInfo['committed_at']; // DateTimeImmutable
+    $committedAt = $batchInfo['committed_at'];
 
-    // Duplicate protection: skip if we've already synced this batch
     try {
         if (has_synced_batch($pdo, $batchId)) {
             $batchSummaries[] = [
@@ -519,10 +668,8 @@ foreach ($batches as $batchInfo) {
         }
     } catch (Throwable $e) {
         $errors[] = 'Error checking sync state for batch ' . $batchId . ': ' . $e->getMessage();
-        // Fall through and attempt processing; marking won't happen on error.
     }
 
-    // Group by Location within this batch
     $locationGroups = [];
 
     try {
@@ -583,15 +730,12 @@ foreach ($batches as $batchInfo) {
         }
     }
 
-    // For each (batch, location) group, build one Deposit
-
     $batchHadErrors = false;
     $batchDeposits  = [];
 
     foreach ($locationGroups as $locKey => $group) {
         $locName      = $group['location_name'];
         $batchName    = $group['batch_name'];
-        /** @var DateTimeImmutable $committedAt */
         $committedAt  = $group['committed_at'];
         $funds        = $group['funds'];
 
@@ -599,7 +743,6 @@ foreach ($batches as $batchInfo) {
             continue;
         }
 
-        // Look up QBO Department (Location) if one is mapped
         $deptRef = null;
         if ($locName !== '') {
             try {
@@ -619,12 +762,10 @@ foreach ($batches as $batchInfo) {
 
         $lines = [];
 
-        // Build one income line per fund, with ClassRef per fund if mapped
         foreach ($funds as $fundRow) {
             $fundName  = $fundRow['pco_fund_name'];
             $className = $fundRow['qbo_class_name'];
 
-            // Look up QBO Class per fund, if mapped
             $classId = null;
             if ($className !== '') {
                 try {
@@ -683,7 +824,6 @@ foreach ($batches as $batchInfo) {
         }
 
         $deposit = [
-            // TxnDate = committed_at date
             'TxnDate' => $committedAt->format('Y-m-d'),
             'PrivateNote' => implode(' | ', $memoParts),
             'DepositToAccountRef' => [
@@ -693,14 +833,11 @@ foreach ($batches as $batchInfo) {
             'Line' => $lines,
         ];
 
-        // One DepartmentRef (Location) per Deposit
         if ($deptRef !== null) {
             $deposit['DepartmentRef'] = $deptRef;
         }
 
         try {
-            // QboClient::createDeposit is assumed to return either the Deposit object
-            // or an array containing it. We'll just stash whatever comes back.
             $resp = $qbo->createDeposit($deposit);
             $dep  = $resp['Deposit'] ?? $resp;
             $createdDeposits[] = [
@@ -723,7 +860,6 @@ foreach ($batches as $batchInfo) {
         }
     }
 
-    // Only mark the batch as synced if we created at least one deposit and had no errors
     if (!$batchHadErrors && !empty($batchDeposits)) {
         try {
             mark_synced_batch($pdo, $batchId);
@@ -733,7 +869,6 @@ foreach ($batches as $batchInfo) {
         }
     }
 
-    // Add per-batch summary for UI/inspection
     $batchSummaries[] = [
         'batch_id'  => $batchId,
         'committed' => $committedAt instanceof DateTimeInterface ? $committedAt->format(DateTimeInterface::ATOM) : null,
@@ -742,10 +877,8 @@ foreach ($batches as $batchInfo) {
     ];
 }
 
-// Move the batch sync window forward to the end of this run
 set_setting($pdo, 'last_batch_sync_completed_at', $windowEnd->format(DateTimeInterface::ATOM));
 
-// Determine log status
 if (empty($errors)) {
     $status = 'success';
 } elseif (!empty($createdDeposits)) {
@@ -762,13 +895,13 @@ $summary = sprintf(
 $details = empty($errors) ? null : implode("\n", $errors);
 
 $logger->finish($logId, $status, $summary, $details);
-// Send email notification on error or partial status
+
 $notificationEmail = get_setting($pdo, 'notification_email');
 if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
     $from   = $config['mail']['from'] ?? null;
     $mailer = new Mailer($from);
 
-    $subject = '[PCO→QBO] Batch sync ' . strtoupper($status);
+    $subject = '[PCO->QBO] Batch sync ' . strtoupper($status);
     $bodyLines = [
         'Batch sync run on ' . $nowUtc->format('Y-m-d H:i:s T'),
         '',
@@ -784,80 +917,117 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
     $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
 }
 
+// ---------------------------------------------------------------------------
+// Render result
+// ---------------------------------------------------------------------------
+
+ob_start();
 ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>PCO → QBO Batch Sync</title>
-    <style>
-        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-        .muted { font-size: 0.9rem; color: #666; }
-        .ok    { padding: 0.75rem 1rem; background: #e6ffed; border: 1px solid #7dd47d; margin-bottom: 1rem; }
-        .error { padding: 0.75rem 1rem; background: #fee; border: 1px solid #f99; margin-bottom: 1rem; }
-        table { border-collapse: collapse; margin-top: 1rem; }
-        th, td { border: 1px solid #ddd; padding: 0.35rem 0.5rem; text-align: left; font-size: 0.9rem; }
-        th { background: #f7f7f7; }
-    </style>
-</head>
-<body>
-<h1>PCO → QBO Batch Sync</h1>
 
 <?php if (!empty($errors)): ?>
-    <div class="error">
-        <strong>Sync completed with errors.</strong>
-        <ul>
-            <?php foreach ($errors as $err): ?>
-                <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
-            <?php endforeach; ?>
-        </ul>
+    <div class="flash error">
+        <span class="tag">Issues</span>
+        <div>
+            <strong>Sync completed with errors.</strong>
+            <ul>
+                <?php foreach ($errors as $err): ?>
+                    <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
+                <?php endforeach; ?>
+            </ul>
+        </div>
     </div>
 <?php else: ?>
-    <div class="ok">
-        <strong>Batch sync completed without errors.</strong>
+    <div class="flash success">
+        <span class="tag">Success</span>
+        <div>Batch sync completed without errors.</div>
     </div>
 <?php endif; ?>
 
-<p>Total donations processed (cash/check, within window): <strong><?= (int)$totalDonations ?></strong></p>
-<p>Deposits created in QBO: <strong><?= count($createdDeposits) ?></strong></p>
+<div class="card">
+    <div class="section-header">
+        <div>
+            <p class="section-title">Summary</p>
+            <p class="section-sub">Run overview</p>
+        </div>
+    </div>
+    <div class="metrics-grid">
+        <div class="metric">
+            <div class="label">Donations processed (cash/check)</div>
+            <div class="value"><?= (int)$totalDonations ?></div>
+        </div>
+        <div class="metric">
+            <div class="label">Deposits created</div>
+            <div class="value"><?= count($createdDeposits) ?></div>
+        </div>
+        <div class="metric">
+            <div class="label">Window start (UTC)</div>
+            <div class="value"><?= htmlspecialchars($sinceUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+        <div class="metric">
+            <div class="label">Window end (UTC)</div>
+            <div class="value"><?= htmlspecialchars($windowEnd->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+    </div>
+</div>
 
-<h2>Deposits created</h2>
-<?php if (empty($createdDeposits)): ?>
-    <p>No committed batches in this window produced deposits.</p>
-<?php else: ?>
-    <table>
-        <thead>
-        <tr>
-            <th>Batch ID</th>
-            <th>Batch Name</th>
-            <th>Location</th>
-            <th>QBO Deposit (Id/DocNumber)</th>
-            <th>Total Gross</th>
-        </tr>
-        </thead>
-        <tbody>
-        <?php foreach ($createdDeposits as $cd): ?>
-            <?php $dep = $cd['deposit'] ?? []; ?>
-            <tr>
-                <td><?= htmlspecialchars((string)$cd['batch_id'], ENT_QUOTES, 'UTF-8') ?></td>
-                <td><?= htmlspecialchars((string)$cd['batch_name'], ENT_QUOTES, 'UTF-8') ?></td>
-                <td><?= htmlspecialchars($cd['location_name'] ?: '(no location)', ENT_QUOTES, 'UTF-8') ?></td>
-                <td><?= htmlspecialchars((string)($dep['DocNumber'] ?? $dep['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
-                <td>$<?= number_format((float)$cd['total_gross'], 2) ?></td>
-            </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
-<?php endif; ?>
+<div class="card">
+    <div class="section-header">
+        <div>
+            <p class="section-title">Deposits created</p>
+            <p class="section-sub">One per batch/location group</p>
+        </div>
+    </div>
 
-<h2>Window used</h2>
-<p class="muted">
-    From <strong><?= htmlspecialchars($sinceUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
-    to <strong><?= htmlspecialchars($windowEnd->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
-    (based on <code>Batch.committed_at</code>).
-</p>
+    <?php if (empty($createdDeposits)): ?>
+        <p class="muted">No committed batches in this window produced deposits.</p>
+    <?php else: ?>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Batch ID</th>
+                    <th>Batch Name</th>
+                    <th>Location</th>
+                    <th>QBO Deposit (Id/DocNumber)</th>
+                    <th>Total Gross</th>
+                </tr>
+                </thead>
+                <tbody>
+                <?php foreach ($createdDeposits as $cd): ?>
+                    <?php $dep = $cd['deposit'] ?? []; ?>
+                    <tr>
+                        <td><?= htmlspecialchars((string)$cd['batch_id'], ENT_QUOTES, 'UTF-8') ?></td>
+                        <td><?= htmlspecialchars((string)$cd['batch_name'], ENT_QUOTES, 'UTF-8') ?></td>
+                        <td><?= htmlspecialchars($cd['location_name'] ?: '(no location)', ENT_QUOTES, 'UTF-8') ?></td>
+                        <td><?= htmlspecialchars((string)($dep['DocNumber'] ?? $dep['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                        <td>$<?= number_format((float)$cd['total_gross'], 2) ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    <?php endif; ?>
+</div>
 
-<p style="margin-top:1.5rem;"><a href="index.php">&larr; Back to dashboard</a></p>
+<div class="card">
+    <div class="section-header">
+        <div>
+            <p class="section-title">Window used</p>
+            <p class="section-sub">Based on Batch.committed_at</p>
+        </div>
+    </div>
+    <p class="muted">
+        From <strong><?= htmlspecialchars($sinceUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
+        to <strong><?= htmlspecialchars($windowEnd->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>.
+    </p>
+</div>
 
-</body>
-</html>
+<div class="actions">
+    <a class="btn secondary" href="run-sync-preview.php">View online sync preview</a>
+    <a class="btn secondary" href="settings.php">Adjust settings</a>
+</div>
+
+<?php
+$content = ob_get_clean();
+
+renderLayout('PCO -> QBO Batch Sync', 'PCO -> QBO Batch Sync', 'Run committed batches to QuickBooks', $content);
