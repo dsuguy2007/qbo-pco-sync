@@ -133,6 +133,23 @@ $syncSummaries['stripe']         = load_sync_summary($pdo, 'last_stripe_sync_sum
 $syncSummaries['batch']          = load_sync_summary($pdo, 'last_batch_sync_summary');
 $syncSummaries['registrations']  = load_sync_summary($pdo, 'last_registrations_sync_summary');
 
+// Config hardening check (simple heuristics)
+$configWarnings = [];
+$sampleStrings = [
+    'your_pco_app_id',
+    'your_pco_secret',
+    'changeme',
+];
+foreach ($sampleStrings as $needle) {
+    if (str_contains(strtolower($config['pco']['app_id'] ?? ''), $needle) ||
+        str_contains(strtolower($config['pco']['secret'] ?? ''), $needle) ||
+        str_contains(strtolower($config['db']['pass'] ?? ''), $needle)
+    ) {
+        $configWarnings[] = 'Configuration still contains sample/placeholder values. Please update .env with real credentials.';
+        break;
+    }
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -447,6 +464,17 @@ $syncSummaries['registrations']  = load_sync_summary($pdo, 'last_registrations_s
                 </div>
             <?php endif; ?>
         </div>
+
+        <?php if (!empty($configWarnings)): ?>
+            <div class="card" style="border:1px solid rgba(255,122,122,0.35); background: rgba(255,122,122,0.08);">
+                <p class="section-title" style="margin:0;">Configuration warnings</p>
+                <ul>
+                    <?php foreach ($configWarnings as $w): ?>
+                        <li><?= htmlspecialchars($w, ENT_QUOTES, 'UTF-8') ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            </div>
+        <?php endif; ?>
 
         <div class="card section">
             <div class="section-header">

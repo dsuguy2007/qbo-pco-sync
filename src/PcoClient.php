@@ -8,6 +8,7 @@ class PcoClient
     private string $baseUrl;
     private string $appId;
     private string $secret;
+    private string $retryLog;
 
     public function __construct(array $config)
     {
@@ -20,6 +21,7 @@ class PcoClient
         $this->baseUrl = rtrim($config['pco']['base_url'] ?? 'https://api.planningcenteronline.com', '/');
         $this->appId   = $config['pco']['app_id'];
         $this->secret  = $config['pco']['secret'];
+        $this->retryLog = dirname(__DIR__) . '/logs/api-retries.log';
     }
 
     /**
@@ -114,6 +116,7 @@ class PcoClient
                 if ($attempts < $maxTries) {
                     sleep($delay);
                     $delay *= 2;
+                    $this->logRetry('pco', $status, $attempts, $url);
                     continue;
                 }
             }
@@ -122,6 +125,19 @@ class PcoClient
         }
 
         throw new RuntimeException($lastErrMsg ?? 'Unknown PCO error');
+    }
+
+    private function logRetry(string $service, int $status, int $attempt, string $url): void
+    {
+        $line = sprintf(
+            "[%s] service=%s status=%d attempt=%d url=%s\n",
+            (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c'),
+            $service,
+            $status,
+            $attempt,
+            $url
+        );
+        @file_put_contents($this->retryLog, $line, FILE_APPEND | LOCK_EX);
     }
 
     /**

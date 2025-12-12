@@ -146,6 +146,7 @@ function trigger_sync(string $url): array
 }
 
 $hadError = false;
+$logLines = [];
 foreach ($urls as $url) {
     $triggerResult = trigger_sync($url);
     if (!$triggerResult['ok']) {
@@ -155,7 +156,19 @@ foreach ($urls as $url) {
             ' err=' . ($triggerResult['error'] ?? 'n/a');
         error_log($msg);
     }
+    $logLines[] = sprintf(
+        '[%s] type=%s url=%s code=%s err=%s',
+        (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c'),
+        $type,
+        $url,
+        $triggerResult['code'] ?? 'n/a',
+        $triggerResult['error'] ?? ''
+    );
 }
+
+// Append webhook activity log
+$logFile = __DIR__ . '/../logs/webhooks.log';
+@file_put_contents($logFile, implode("\n", $logLines) . "\n", FILE_APPEND | LOCK_EX);
 
 http_response_code(202);
 echo $hadError ? 'Sync triggered with errors.' : 'Sync triggered.';

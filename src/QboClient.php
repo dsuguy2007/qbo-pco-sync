@@ -16,6 +16,7 @@ class QboClient
     private array $classCache   = [];
     private array $deptCache    = [];
     private array $paymentMethodCache = [];
+    private string $retryLog;
 
     public function __construct(PDO $pdo, array $config)
     {
@@ -38,6 +39,8 @@ class QboClient
                 $this->expiresAt = null;
             }
         }
+
+        $this->retryLog = dirname(__DIR__) . '/logs/api-retries.log';
     }
 
     private function loadLatestTokenRow(): ?array
@@ -228,6 +231,7 @@ class QboClient
                 if ($attempts < $maxTries) {
                     sleep($delay);
                     $delay *= 2;
+                    $this->logRetry('qbo', $status, $attempts, $url);
                     continue;
                 }
             }
@@ -235,6 +239,19 @@ class QboClient
         }
 
         throw new RuntimeException($lastErrMsg ?? 'Unknown QBO error');
+    }
+
+    private function logRetry(string $service, int $status, int $attempt, string $url): void
+    {
+        $line = sprintf(
+            "[%s] service=%s status=%d attempt=%d url=%s\n",
+            (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c'),
+            $service,
+            $status,
+            $attempt,
+            $url
+        );
+        @file_put_contents($this->retryLog, $line, FILE_APPEND | LOCK_EX);
     }
 
     private function query(string $sql): array
