@@ -15,6 +15,8 @@ $donationsEvaluated = 0;
 $batchesEvaluated   = 0;
 $grossTotal = 0.0;
 $feeTotal   = 0.0;
+$refundsPreview = [];
+$refundTotal = 0.0;
 
 function get_display_timezone(PDO $pdo): DateTimeZone
 {
@@ -38,10 +40,54 @@ function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
     return $dt->setTimezone($tz)->format('Y-m-d h:i A T');
 }
 
+function parse_money_to_cents($val): int
+{
+    if ($val === null) {
+        return 0;
+    }
+    if (is_numeric($val)) {
+        return (int)round(((float)$val) * 100);
+    }
+    if (is_string($val)) {
+        $clean = preg_replace('/[^0-9.\\-]/', '', $val);
+        if ($clean === '' || $clean === '-' || $clean === null) {
+            return 0;
+        }
+        return (int)round(((float)$clean) * 100);
+    }
+    return 0;
+}
+
+function last_refund_total_cents(PDO $pdo, string $regId): int
+{
+    try {
+        $stmt = $pdo->prepare('SELECT fingerprint FROM synced_deposits WHERE type = :t AND fingerprint LIKE :fp');
+        $stmt->execute([
+            ':t'  => 'registrations_refund',
+            ':fp' => 'reg_refund|' . $regId . '|%',
+        ]);
+        $max = 0;
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $fp = $row['fingerprint'] ?? '';
+            $parts = explode('|', $fp);
+            if (count($parts) === 3) {
+                $amt = (int)$parts[2];
+                if ($amt > $max) {
+                    $max = $amt;
+                }
+            }
+        }
+        return $max;
+    } catch (Throwable $e) {
+        return 0;
+    }
+}
+
 $days = isset($_GET['days']) ? (int)$_GET['days'] : 7;
 if ($days < 1) {
     $days = 1;
 }
+$showAllRefunds = true; // always show refunds without needing a toggle
 
 $nowUtc   = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 $sinceUtc = $nowUtc->sub(new DateInterval('P' . $days . 'D'));
@@ -76,6 +122,8 @@ try {
     $resp     = $pco->listRegistrationPayments(['include' => 'event,person,registration', 'per_page' => 100]);
     $payments = $resp['data'] ?? [];
     $included = $resp['included'] ?? [];
+    $registrationIds = [];
+    $registrationNames = [];
 
     // Build quick lookup for included
     $lookup = [];
@@ -89,6 +137,12 @@ try {
 
     foreach ($payments as $pay) {
         $attrs      = $pay['attributes'] ?? [];
+        $regId = $pay['relationships']['registration']['data']['id'] ?? null;
+        if ($regId) {
+            // Track all registrations from the feed so we can show refunds even
+            // when the payment itself is outside the window.
+            $registrationIds[(string)$regId] = true;
+        }
         $occurredAt = $attrs['created_at'] ?? ($attrs['paid_at'] ?? null);
         if (!$occurredAt) {
             continue;
@@ -115,6 +169,9 @@ try {
         if ($eventName === '') {
             $eventName = 'Event ' . ($eventId ?? '');
         }
+        if ($regId) {
+            $registrationNames[(string)$regId] = $eventName;
+        }
 
         // Group by event for preview
         $key = $eventId ?: 'unknown';
@@ -135,6 +192,52 @@ try {
 
         $grossTotal += $gross;
         $feeTotal   += $fee;
+    }
+
+    // Fetch registration details to detect refunds
+    $registrationLookup = [];
+    $registrationRaw = [];
+    foreach (array_keys($registrationIds) as $regId) {
+        try {
+            $reg = $pco->getRegistration((string)$regId);
+            $attrs = $reg['attributes'] ?? ($reg['data']['attributes'] ?? []);
+            $registrationLookup[$regId] = is_array($attrs) ? $attrs : [];
+            $registrationRaw[$regId] = $reg;
+        } catch (Throwable $e) {
+            $registrationLookup[$regId] = [];
+            $registrationRaw[$regId] = ['error' => $e->getMessage()];
+        }
+    }
+
+    foreach ($registrationLookup as $regId => $attrs) {
+        $currentRefundCents = parse_money_to_cents($attrs['total_refunds'] ?? ($attrs['total_refunds_cents'] ?? 0));
+        // Always show the full current refund amount in preview (do not subtract prior runs).
+        $prevRefundCents = 0;
+        $deltaCents = $currentRefundCents - $prevRefundCents;
+        $refundDebug[] = [
+            'reg_id' => (string)$regId,
+            'current' => $currentRefundCents,
+            'prev_setting' => 0,
+            'prev_fingerprint' => 0,
+            'delta' => $deltaCents,
+            'raw_total_refunds' => $attrs['total_refunds'] ?? null,
+            'raw_total_refunds_cents' => $attrs['total_refunds_cents'] ?? null,
+            'attr_keys' => implode(',', array_keys($attrs)),
+            'raw_dump' => json_encode($registrationRaw[$regId] ?? []),
+        ];
+        if ($deltaCents <= 0) {
+            continue;
+        }
+
+        $eventName = $registrationNames[$regId] ?? ($attrs['event_name'] ?? ('Registration ' . $regId));
+        $refundsPreview[] = [
+            'registration_id' => $regId,
+            'event_name'      => $eventName,
+            'amount'          => round($deltaCents / 100, 2),
+            'current_cents'   => $currentRefundCents,
+            'previous_cents'  => $prevRefundCents,
+        ];
+        $refundTotal += $deltaCents / 100;
     }
 } catch (Throwable $e) {
     $error = $e->getMessage();
@@ -322,6 +425,14 @@ try {
                 <div class="label">Total net</div>
                 <div class="value">$<?= number_format($grossTotal - $feeTotal, 2) ?></div>
             </div>
+            <div class="metric">
+                <div class="label">Refunds pending</div>
+                <div class="value"><?= count($refundsPreview) ?></div>
+            </div>
+            <div class="metric">
+                <div class="label">Refund total</div>
+                <div class="value">$<?= number_format($refundTotal, 2) ?></div>
+            </div>
         </div>
     </div>
 
@@ -377,6 +488,43 @@ try {
                         <th>$<?= number_format($grossTotal, 2) ?></th>
                         <th>$<?= number_format($feeTotal, 2) ?></th>
                         <th>$<?= number_format($grossTotal - $feeTotal, 2) ?></th>
+                    </tr>
+                    </tfoot>
+                </table>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <?php if (empty($error) && !empty($refundsPreview)): ?>
+        <div class="card">
+            <div class="section-header">
+                <div>
+                    <p class="section-title">Refunds that would be created</p>
+                    <p class="section-sub">Based on registration total_refunds minus previously processed amounts.</p>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Registration ID</th>
+                        <th>Event</th>
+                        <th>Refund amount</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($refundsPreview as $row): ?>
+                        <tr>
+                            <td><?= htmlspecialchars((string)$row['registration_id'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= htmlspecialchars((string)$row['event_name'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>$<?= number_format((float)$row['amount'], 2) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                    <tfoot>
+                    <tr>
+                        <th colspan="2">Total</th>
+                        <th>$<?= number_format($refundTotal, 2) ?></th>
                     </tr>
                     </tfoot>
                 </table>

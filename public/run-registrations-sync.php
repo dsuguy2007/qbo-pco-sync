@@ -128,6 +128,31 @@ function mark_synced_deposit(PDO $pdo, string $type, string $fingerprint): void
     ]);
 }
 
+function last_refund_total_cents(PDO $pdo, string $regId): int
+{
+    try {
+        $stmt = $pdo->prepare('SELECT fingerprint FROM synced_deposits WHERE type = :t AND fingerprint LIKE :fp');
+        $stmt->execute([
+            ':t'  => 'registrations_refund',
+            ':fp' => 'reg_refund|' . $regId . '|%',
+        ]);
+        $max = 0;
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $fp = $row['fingerprint'] ?? '';
+            $parts = explode('|', $fp);
+            if (count($parts) === 3) {
+                $amt = (int)$parts[2];
+                if ($amt > $max) {
+                    $max = $amt;
+                }
+            }
+        }
+        return $max;
+    } catch (Throwable $e) {
+        return 0;
+    }
+}
+
 function get_display_timezone(PDO $pdo): DateTimeZone
 {
     $tz = null;
@@ -148,6 +173,24 @@ function get_display_timezone(PDO $pdo): DateTimeZone
 function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
 {
     return $dt->setTimezone($tz)->format('Y-m-d h:i A T');
+}
+
+function parse_money_to_cents($val): int
+{
+    if ($val === null) {
+        return 0;
+    }
+    if (is_numeric($val)) {
+        return (int)round(((float)$val) * 100);
+    }
+    if (is_string($val)) {
+        $clean = preg_replace('/[^0-9.\\-]/', '', $val);
+        if ($clean === '' || $clean === '-' || $clean === null) {
+            return 0;
+        }
+        return (int)round(((float)$clean) * 100);
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -197,24 +240,10 @@ try {
 // ---------------------------------------------------------------------------
 
 $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-$lastRegRaw    = get_setting($pdo, 'last_registrations_paid_at');
 $backfillDays  = isset($_GET['backfill_days']) ? max(1, min(90, (int)$_GET['backfill_days'])) : 7;
-$resetWindow   = isset($_GET['reset_window']) && $_GET['reset_window'] === '1';
 $defaultSince  = $nowUtc->sub(new DateInterval('P' . $backfillDays . 'D'));
-
-if ($lastRegRaw === null || $resetWindow) {
-    $sinceUtc = $defaultSince;
-} else {
-    try {
-        $sinceUtc = new DateTimeImmutable($lastRegRaw);
-    } catch (Throwable $e) {
-        $sinceUtc = $defaultSince;
-    }
-}
-// Guard against future or sub-minute windows: fall back to default lookback.
-if ($sinceUtc >= $nowUtc || ($nowUtc->getTimestamp() - $sinceUtc->getTimestamp()) < 60) {
-    $sinceUtc = $defaultSince;
-}
+$forceRefunds  = isset($_GET['force_refunds']) && $_GET['force_refunds'] === '1';
+$sinceUtc = $defaultSince; // Default to N-day lookback unless explicitly overridden.
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -294,16 +323,31 @@ try {
 // Grab registration details (needed for registration date / person name in memos)
 $registrationLookup = [];
 $registrationIds    = [];
+$registrationMeta   = [];
 foreach ($payments as $pay) {
     $regId = $pay['relationships']['registration']['data']['id'] ?? null;
     if ($regId) {
         $registrationIds[(string)$regId] = true;
+        // capture payer for memo fallback
+        $payerName = trim((string)($pay['attributes']['payer_name'] ?? ''));
+        if (!isset($registrationMeta[$regId])) {
+            $registrationMeta[$regId] = ['payer_name' => $payerName];
+        } elseif ($payerName !== '') {
+            $registrationMeta[$regId]['payer_name'] = $payerName;
+        }
     }
 }
 foreach (array_keys($registrationIds) as $regId) {
     try {
-        $regData = $pco->getRegistration($regId);
-        $registrationLookup[$regId] = $regData['attributes'] ?? [];
+        $regData = $pco->getRegistration((string)$regId);
+        $attrs = $regData['attributes'] ?? ($regData['data']['attributes'] ?? []);
+        $registrationLookup[$regId] = is_array($attrs) ? $attrs : [];
+        if (isset($regData['attributes']['created_by_name']) && $regData['attributes']['created_by_name'] !== '') {
+            $registrationMeta[$regId]['created_by_name'] = $regData['attributes']['created_by_name'];
+        }
+        if (isset($regData['relationships']['event']['data']['id'])) {
+            $registrationMeta[$regId]['event_id'] = $regData['relationships']['event']['data']['id'];
+        }
     } catch (Throwable $e) {
         // If we can't fetch one registration, continue; we'll fallback in descriptions.
         $registrationLookup[$regId] = [];
@@ -315,11 +359,20 @@ $feeLines = [];
 $processedIds = [];
 $grossTotal = 0.0;
 $feeTotal   = 0.0;
+$refundsCreated = 0;
+$refundTotal = 0.0;
+$refundCreatedIds = [];
 $pmStats    = ['lines' => 0, 'with_ref' => 0, 'missing' => 0];
 $missingPmIds = [];
 
 foreach ($payments as $pay) {
     $attrs  = $pay['attributes'] ?? [];
+    $registrationId   = $pay['relationships']['registration']['data']['id'] ?? null;
+    if ($registrationId) {
+        // Track all registration IDs, even if payment falls outside the window,
+        // so we can detect refunds that happen later.
+        $registrationIds[(string)$registrationId] = true;
+    }
     // The newer default Registrations API removed paid_at; use created_at for windowing.
     $occurredAt = $attrs['created_at'] ?? ($attrs['paid_at'] ?? null);
     if (!$occurredAt) { continue; }
@@ -339,6 +392,9 @@ foreach ($payments as $pay) {
     $eventName = trim((string)($attrs['event_name'] ?? ''));
     if ($eventName === '') {
         $eventName = 'Event ' . ($eventId ?? '');
+    }
+    if ($registrationId) {
+        $registrationMeta[$registrationId]['event_name'] = $eventName;
     }
 
     $registrationId   = $pay['relationships']['registration']['data']['id'] ?? null;
@@ -428,7 +484,92 @@ foreach ($payments as $pay) {
     $feeTotal   += $fee;
 }
 
-if (empty($lines)) {
+// ---------------------------------------------------------------------------
+// Process refunds based on registration totals (delta since last run)
+// ---------------------------------------------------------------------------
+
+$refundAccountName = get_setting($pdo, 'stripe_refund_account_name') ?? '';
+$refundAccount     = null;
+try {
+    if ($refundAccountName !== '') {
+        $refundAccount = $qbo->getAccountByName($refundAccountName, true);
+    }
+} catch (Throwable $e) {
+    $errors[] = 'Error looking up refund account: ' . $e->getMessage();
+}
+$refundAccountFallback = $incomeAccount;
+
+foreach ($registrationLookup as $regId => $regAttrs) {
+    $regId = (string)$regId;
+    $currentRefundCents = parse_money_to_cents($regAttrs['total_refunds'] ?? ($regAttrs['total_refunds_cents'] ?? 0));
+    $prevRefundCentsSetting = (int)(get_setting($pdo, 'reg_refunded_cents_' . $regId) ?? 0);
+    $prevRefundCentsFingerprint = last_refund_total_cents($pdo, $regId);
+    $prevRefundCents    = $forceRefunds ? 0 : max($prevRefundCentsSetting, $prevRefundCentsFingerprint);
+    $deltaCents         = $currentRefundCents - $prevRefundCents;
+    if ($deltaCents <= 0) {
+        continue;
+    }
+
+    $deltaAmount = round($deltaCents / 100, 2);
+    $fingerprint = 'reg_refund|' . $regId . '|' . $currentRefundCents;
+
+    $eventName = '';
+    if (isset($regAttrs['event_name'])) {
+        $eventName = (string)$regAttrs['event_name'];
+    } elseif (isset($registrationMeta[$regId]['event_id'])) {
+        $eventName = 'Event ' . $registrationMeta[$regId]['event_id'];
+    }
+    $payerName = $registrationMeta[$regId]['payer_name'] ?? ($registrationMeta[$regId]['created_by_name'] ?? 'Unknown person');
+
+    // Build an Account-based Expense (Purchase) with the refund account line.
+    $line = [
+        'Amount' => $deltaAmount,
+        'DetailType' => 'AccountBasedExpenseLineDetail',
+        'Description' => 'Registration refund: ' . $eventName,
+        'AccountBasedExpenseLineDetail' => [
+            'AccountRef' => [
+                'value' => (string)($refundAccount['Id'] ?? $refundAccountFallback['Id']),
+                'name'  => ($refundAccount['Name'] ?? $refundAccountName) ?: ($refundAccountFallback['Name'] ?? $regIncomeName),
+            ],
+        ],
+    ];
+    if ($classRef) {
+        $line['AccountBasedExpenseLineDetail']['ClassRef'] = $classRef;
+    }
+
+    $purchase = [
+        'TxnDate' => $nowUtc->format('Y-m-d'),
+        'PaymentType' => 'Cash',
+        // Bank/cash account the refund leaves from (same as deposit account for simplicity)
+        'AccountRef' => [
+            'value' => (string)$depositAccount['Id'],
+            'name'  => $depositAccount['Name'] ?? $regDepositName,
+        ],
+        'PrivateNote' => 'Registration refund ' . $regId . ' (' . $eventName . ') payer: ' . $payerName,
+        'TotalAmt' => $deltaAmount,
+        'Line' => [$line],
+    ];
+    if ($deptRef) {
+        $purchase['DepartmentRef'] = $deptRef;
+    }
+
+    try {
+        $resp = $qbo->createPurchase($purchase);
+        mark_synced_deposit($pdo, 'registrations_refund', $fingerprint);
+        set_setting($pdo, 'reg_refunded_cents_' . $regId, (string)$currentRefundCents);
+        $refundsCreated++;
+        $refundTotal += $deltaAmount;
+        $refundCreatedIds[] = $regId;
+    } catch (Throwable $e) {
+        $errors[] = 'Error creating refund expense for registration ' . $regId . ': ' . $e->getMessage();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// If nothing to do, exit early
+// ---------------------------------------------------------------------------
+
+if (empty($lines) && $refundsCreated === 0) {
     set_setting($pdo, 'last_registrations_paid_at', $nowUtc->format(DateTimeInterface::ATOM));
     echo '<h1>Registrations sync</h1>';
     echo '<p>No payments found in this window (' .
@@ -439,48 +580,52 @@ if (empty($lines)) {
     exit;
 }
 
-// Build deposit
-$deposit = [
-    'TxnDate' => $nowUtc->format('Y-m-d'),
-    'PrivateNote' => 'Registrations created_at ' . $sinceUtc->format('Y-m-d H:i:s') . ' to ' . $nowUtc->format('Y-m-d H:i:s'),
-    'DepositToAccountRef' => [
-        'value' => (string)$depositAccount['Id'],
-        'name'  => $depositAccount['Name'] ?? $regDepositName,
-    ],
-    'Line' => $lines,
-];
-
-if ($deptRef) {
-    $deposit['DepartmentRef'] = $deptRef;
-}
-
-// Idempotency
-$fingerprint = hash('sha256', json_encode([
-    'type' => 'registrations',
-    'ids' => $processedIds,
-    'account' => $depositAccount['Id'] ?? '',
-]));
-
-if (has_synced_deposit($pdo, 'registrations', $fingerprint)) {
-    echo '<h1>Registrations sync</h1><p>Deposit already synced for this window (fingerprint matched). No action taken.</p><p><a href="index.php">&larr; Back to dashboard</a></p>';
-    exit;
-}
-
-$errors = [];
+// Build deposit if we have payment lines
 $depositResult = null;
-try {
-    $resp = $qbo->createDeposit($deposit);
-    $depositResult = $resp['Deposit'] ?? $resp;
-    mark_synced_deposit($pdo, 'registrations', $fingerprint);
-    set_setting($pdo, 'last_registrations_paid_at', $nowUtc->format(DateTimeInterface::ATOM));
-} catch (Throwable $e) {
-    $errors[] = $e->getMessage();
+if (!empty($lines)) {
+    $deposit = [
+        'TxnDate' => $nowUtc->format('Y-m-d'),
+        'PrivateNote' => 'Registrations created_at ' . $sinceUtc->format('Y-m-d H:i:s') . ' to ' . $nowUtc->format('Y-m-d H:i:s'),
+        'DepositToAccountRef' => [
+            'value' => (string)$depositAccount['Id'],
+            'name'  => $depositAccount['Name'] ?? $regDepositName,
+        ],
+        'Line' => $lines,
+    ];
+
+    if ($deptRef) {
+        $deposit['DepartmentRef'] = $deptRef;
+    }
+
+    // Idempotency
+    $fingerprint = hash('sha256', json_encode([
+        'type' => 'registrations',
+        'ids' => $processedIds,
+        'account' => $depositAccount['Id'] ?? '',
+    ]));
+
+    $depositAlreadySynced = has_synced_deposit($pdo, 'registrations', $fingerprint);
+
+    try {
+        if (!$depositAlreadySynced) {
+            $resp = $qbo->createDeposit($deposit);
+            $depositResult = $resp['Deposit'] ?? $resp;
+            mark_synced_deposit($pdo, 'registrations', $fingerprint);
+        }
+    } catch (Throwable $e) {
+        $errors[] = $e->getMessage();
+    }
 }
 $status = empty($errors) ? 'success' : 'error';
+if ($status === 'success') {
+    set_setting($pdo, 'last_registrations_paid_at', $nowUtc->format(DateTimeInterface::ATOM));
+}
 $summaryData = [
     'ts'        => $nowUtc->format(DateTimeInterface::ATOM),
     'status'    => $status,
     'payments'  => count($processedIds),
+    'refunds'   => $refundsCreated,
+    'refund_total' => round($refundTotal, 2),
     'window'    => [
         'since' => $sinceUtc->format(DateTimeInterface::ATOM),
         'until' => $nowUtc->format(DateTimeInterface::ATOM),
@@ -556,44 +701,63 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
 <div class="page">
     <h1>Registrations Sync Result</h1>
 
-    <?php if (!empty($errors)): ?>
-        <div class="flash error">
-            <strong>Errors occurred:</strong>
-            <ul>
-                <?php foreach ($errors as $err): ?>
-                    <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
-                <?php endforeach; ?>
-            </ul>
-        </div>
-    <?php else: ?>
-        <div class="flash success">
-            <strong>Deposit created in QuickBooks.</strong>
-        </div>
-    <?php endif; ?>
-
-<div class="card">
     <p class="muted">
-        Window used (created_at):
-        <strong><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
-        to
-        <strong><?= htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
-        (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)
+        <a style="color:#fff;" href="?reset_window=1&backfill_days=7">Reset window to 7d</a> |
+        <a style="color:#fff;" href="?backfill_days=7&force_refunds=1">Force refunds (ignore prior totals)</a>
     </p>
-    <p class="muted">Quick window reset:
-        <a style="color: #fff;" href="?reset_window=1&backfill_days=1">24h</a> |
-        <a style="color: #fff;" href="?reset_window=1&backfill_days=7">7d</a> |
-        <a style="color: #fff;" href="?reset_window=1&backfill_days=30">30d</a>
-    </p>
-    <table>
-        <tr><th>Payments processed</th><td><?= count($processedIds) ?></td></tr>
-        <tr><th>Gross</th><td>$<?= number_format($grossTotal, 2) ?></td></tr>
-        <tr><th>Fees</th><td>$<?= number_format($feeTotal, 2) ?></td></tr>
-        <tr><th>Net</th><td>$<?= number_format($grossTotal - $feeTotal, 2) ?></td></tr>
-            <?php if ($depositResult): ?>
-                <tr><th>QBO Deposit Id</th><td><?= htmlspecialchars((string)($depositResult['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td></tr>
-            <?php endif; ?>
-        </table>
+
+<?php if (!empty($errors)): ?>
+    <div class="flash error">
+        <strong>Errors occurred:</strong>
+        <ul>
+            <?php foreach ($errors as $err): ?>
+                <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
+            <?php endforeach; ?>
+        </ul>
+        <?php if ($depositResult): ?>
+            <p class="muted">A deposit may have been created before the errors. Review QBO if you retry.</p>
+        <?php endif; ?>
     </div>
+<?php else: ?>
+    <div class="flash success">
+        <div>
+            <div><strong><?= $depositResult ? 'Deposit processed.' : 'No deposits were created.' ?></strong></div>
+            <div class="muted">
+                Refunds created: <?= (int)$refundsCreated ?> (<?= '$' . number_format($refundTotal, 2) ?>)
+                <?php if (!empty($refundCreatedIds)): ?>
+                    — Reg IDs: <?= htmlspecialchars(implode(', ', $refundCreatedIds), ENT_QUOTES, 'UTF-8') ?>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
+
+<?php if (!empty($processedIds) || $refundsCreated > 0): ?>
+    <div class="card">
+        <p class="muted">
+            Window used (created_at):
+            <strong><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
+            to
+            <strong><?= htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
+            (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)
+        </p>
+        <p class="muted">Quick window reset:
+            <a style="color: #fff;" href="?reset_window=1&backfill_days=1">24h</a> |
+            <a style="color: #fff;" href="?reset_window=1&backfill_days=7">7d</a> |
+            <a style="color: #fff;" href="?reset_window=1&backfill_days=30">30d</a>
+        </p>
+        <table>
+            <tr><th>Payments processed</th><td><?= count($processedIds) ?></td></tr>
+            <tr><th>Gross</th><td>$<?= number_format($grossTotal, 2) ?></td></tr>
+            <tr><th>Fees</th><td>$<?= number_format($feeTotal, 2) ?></td></tr>
+            <tr><th>Net</th><td>$<?= number_format($grossTotal - $feeTotal, 2) ?></td></tr>
+            <tr><th>Refunds created</th><td><?= (int)$refundsCreated ?> ($<?= number_format($refundTotal, 2) ?>)</td></tr>
+                <?php if ($depositResult): ?>
+                    <tr><th>QBO Deposit Id</th><td><?= htmlspecialchars((string)($depositResult['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td></tr>
+                <?php endif; ?>
+            </table>
+        </div>
+<?php endif; ?>
 
     <p><a href="index.php">&larr; Back to dashboard</a></p>
     <div class="footer">
