@@ -54,17 +54,19 @@ $type = $payload['type'] ?? ($payload['event']['type'] ?? ($payload['data']['typ
 if ($type === '' && isset($payload['data'][0]['attributes']['name'])) {
     $type = (string)$payload['data'][0]['attributes']['name'];
 }
-$action = null;
+$actions = [];
 
 // Routing for PCO Giving webhooks (event types from your subscriptions)
 if (in_array($type, ['giving.v2.events.batch.created', 'giving.v2.events.batch.updated'], true)) {
-    $action = 'run-batch-sync.php';
+    $actions[] = 'run-batch-sync.php';
+    // Also trigger registrations sync when batches commit
+    $actions[] = 'run-registrations-sync.php';
 } elseif (in_array($type, ['giving.v2.events.donation.created', 'giving.v2.events.donation.updated'], true)) {
-    $action = 'run-sync.php';
+    $actions[] = 'run-sync.php';
 }
 
 // If unknown type, accept but no action
-if ($action === null) {
+if (empty($actions)) {
     http_response_code(202);
     echo 'Event ignored.';
     exit;
@@ -82,7 +84,10 @@ if (!empty($config['app']['base_url'])) {
     $baseUrl  = $scheme . '://' . $host . ($reqDir !== '' ? $reqDir : '');
 }
 
-$url = rtrim($baseUrl, '/') . '/' . $action . '?webhook_secret=' . urlencode((string)$matchedSecret);
+$urls = [];
+foreach ($actions as $action) {
+    $urls[] = rtrim($baseUrl, '/') . '/' . $action . '?webhook_secret=' . urlencode((string)$matchedSecret);
+}
 
 /**
  * Trigger sync in a best-effort, short-lived call (non-blocking for PCO).
@@ -140,13 +145,17 @@ function trigger_sync(string $url): array
     ];
 }
 
-$triggerResult = trigger_sync($url);
-if (!$triggerResult['ok']) {
-    $msg = '[pco-webhook] Failed to trigger sync endpoint: ' . $url .
-        ' code=' . ($triggerResult['code'] ?? 0) .
-        ' err=' . ($triggerResult['error'] ?? 'n/a');
-    error_log($msg);
+$hadError = false;
+foreach ($urls as $url) {
+    $triggerResult = trigger_sync($url);
+    if (!$triggerResult['ok']) {
+        $hadError = true;
+        $msg = '[pco-webhook] Failed to trigger sync endpoint: ' . $url .
+            ' code=' . ($triggerResult['code'] ?? 0) .
+            ' err=' . ($triggerResult['error'] ?? 'n/a');
+        error_log($msg);
+    }
 }
 
 http_response_code(202);
-echo 'Sync triggered.';
+echo $hadError ? 'Sync triggered with errors.' : 'Sync triggered.';

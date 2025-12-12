@@ -88,13 +88,13 @@ try {
     }
 
     foreach ($payments as $pay) {
-        $attrs  = $pay['attributes'] ?? [];
-        $paidAt = $attrs['paid_at'] ?? null;
-        if (!$paidAt) {
+        $attrs      = $pay['attributes'] ?? [];
+        $occurredAt = $attrs['created_at'] ?? ($attrs['paid_at'] ?? null);
+        if (!$occurredAt) {
             continue;
         }
         try {
-            $paidAtDt = new DateTimeImmutable($paidAt);
+            $paidAtDt = new DateTimeImmutable($occurredAt);
         } catch (Throwable $e) {
             continue;
         }
@@ -103,16 +103,18 @@ try {
         }
 
         $donationsEvaluated++;
-        $grossCents = (int)($attrs['total_cents'] ?? 0);
-        $feeCents   = (int)($attrs['fee_cents'] ?? 0);
+        $grossCents = (int)($attrs['amount_cents'] ?? 0);
+        $feeCents   = (int)($attrs['stripe_fee_cents'] ?? 0);
 
         $gross = $grossCents / 100.0;
         $fee   = $feeCents / 100.0;
         $net   = $gross - $fee;
 
-        $eventId = $pay['relationships']['event']['data']['id'] ?? null;
-        $event   = $eventId && isset($lookup['event'][$eventId]) ? $lookup['event'][$eventId] : [];
-        $eventName = $event['name'] ?? 'Event ' . ($eventId ?? '');
+        $eventId   = $pay['relationships']['event']['data']['id'] ?? null;
+        $eventName = trim((string)($attrs['event_name'] ?? ''));
+        if ($eventName === '') {
+            $eventName = 'Event ' . ($eventId ?? '');
+        }
 
         // Group by event for preview
         $key = $eventId ?: 'unknown';
@@ -286,7 +288,7 @@ try {
         <div class="section-header">
             <div>
                 <p class="section-title">Window and filters</p>
-                <p class="section-sub">paid_at within the selected range.</p>
+                <p class="section-sub">created_at within the selected range (legacy Registrations API version).</p>
             </div>
             <form method="get" class="filters">
                 <label for="days">Days back</label>

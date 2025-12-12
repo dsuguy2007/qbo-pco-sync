@@ -25,7 +25,7 @@ class PcoClient
     /**
      * Low-level HTTP request wrapper.
      */
-    private function request(string $method, string $path, array $query = []): array
+    private function request(string $method, string $path, array $query = [], array $headers = []): array
     {
         // If $path is a full URL (from "links.next"), don't double-prefix
         if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
@@ -40,14 +40,21 @@ class PcoClient
 
         $ch = curl_init($url);
 
+        $httpHeaders = ['Accept: application/json'];
+        // Registrations endpoints require an older version header; default is now missing payments.
+        if (str_contains($path, '/registrations/')) {
+            $httpHeaders[] = 'X-PCO-API-Version: 2024-10-01';
+        }
+        foreach ($headers as $h) {
+            $httpHeaders[] = $h;
+        }
+
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CUSTOMREQUEST  => strtoupper($method),
             CURLOPT_USERPWD        => $this->appId . ':' . $this->secret,
             CURLOPT_HTTPAUTH       => CURLAUTH_BASIC,
-            CURLOPT_HTTPHEADER     => [
-                'Accept: application/json',
-            ],
+            CURLOPT_HTTPHEADER     => $httpHeaders,
             CURLOPT_TIMEOUT        => 30,
         ]);
 
@@ -149,5 +156,14 @@ class PcoClient
         }
 
         return ['data' => $payments, 'included' => $included];
+    }
+
+    /**
+     * Fetch a single registration by id (Registrations API).
+     */
+    public function getRegistration(string $id): array
+    {
+        $resp = $this->request('GET', '/registrations/v2/registrations/' . urlencode($id));
+        return $resp['data'] ?? [];
     }
 }

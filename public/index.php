@@ -498,6 +498,9 @@ try {
                     <span class="desc">Push registrations payments into QuickBooks deposits.</span>
                 </a>
             </div>
+            <p class="muted" style="margin-top: 0.65rem;">
+                Registrations payments use a legacy PCO API version and may stop working without notice.
+            </p>
         </div>
 
         <div class="card section">

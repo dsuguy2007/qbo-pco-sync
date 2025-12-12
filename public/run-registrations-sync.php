@@ -118,23 +118,23 @@ try {
 // ---------------------------------------------------------------------------
 
 $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-$lastReg = get_setting($pdo, 'last_registrations_paid_at');
+$lastRegRaw    = get_setting($pdo, 'last_registrations_paid_at');
+$backfillDays  = isset($_GET['backfill_days']) ? max(1, min(90, (int)$_GET['backfill_days'])) : 7;
+$resetWindow   = isset($_GET['reset_window']) && $_GET['reset_window'] === '1';
+$defaultSince  = $nowUtc->sub(new DateInterval('P' . $backfillDays . 'D'));
 
-if ($lastReg === null) {
-    set_setting($pdo, 'last_registrations_paid_at', $nowUtc->format(DateTimeInterface::ATOM));
-    echo '<h1>Registrations sync</h1><p>Initialized window at ' .
-        htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') .
-        ' (' . htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') . '). No payments imported.</p><p><a href="index.php">&larr; Back to dashboard</a></p>';
-    exit;
+if ($lastRegRaw === null || $resetWindow) {
+    $sinceUtc = $defaultSince;
+} else {
+    try {
+        $sinceUtc = new DateTimeImmutable($lastRegRaw);
+    } catch (Throwable $e) {
+        $sinceUtc = $defaultSince;
+    }
 }
-
-try {
-    $sinceUtc = new DateTimeImmutable($lastReg);
-} catch (Throwable $e) {
-    $sinceUtc = $nowUtc;
-    set_setting($pdo, 'last_registrations_paid_at', $nowUtc->format(DateTimeInterface::ATOM));
-    echo '<h1>Registrations sync</h1><p>Invalid last_registrations_paid_at; reset to now.</p><p><a href="index.php">&larr; Back to dashboard</a></p>';
-    exit;
+// Guard against future or sub-minute windows: fall back to default lookback.
+if ($sinceUtc >= $nowUtc || ($nowUtc->getTimestamp() - $sinceUtc->getTimestamp()) < 60) {
+    $sinceUtc = $defaultSince;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,20 +204,28 @@ if (!empty($errors)) {
 try {
     $resp     = $pco->listRegistrationPayments(['include' => 'event,person,registration', 'per_page' => 100]);
     $payments = $resp['data'] ?? [];
-    $included = $resp['included'] ?? [];
 } catch (Throwable $e) {
     http_response_code(500);
     echo '<h1>PCO error</h1><pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
     exit;
 }
 
-// Build lookup
-$lookup = [];
-foreach ($included as $inc) {
-    $type = $inc['type'] ?? '';
-    $id   = (string)($inc['id'] ?? '');
-    if ($type && $id) {
-        $lookup[$type][$id] = $inc['attributes'] ?? [];
+// Grab registration details (needed for registration date / person name in memos)
+$registrationLookup = [];
+$registrationIds    = [];
+foreach ($payments as $pay) {
+    $regId = $pay['relationships']['registration']['data']['id'] ?? null;
+    if ($regId) {
+        $registrationIds[(string)$regId] = true;
+    }
+}
+foreach (array_keys($registrationIds) as $regId) {
+    try {
+        $regData = $pco->getRegistration($regId);
+        $registrationLookup[$regId] = $regData['attributes'] ?? [];
+    } catch (Throwable $e) {
+        // If we can't fetch one registration, continue; we'll fallback in descriptions.
+        $registrationLookup[$regId] = [];
     }
 }
 
@@ -229,33 +237,51 @@ $feeTotal   = 0.0;
 
 foreach ($payments as $pay) {
     $attrs  = $pay['attributes'] ?? [];
-    $paidAt = $attrs['paid_at'] ?? null;
-    if (!$paidAt) { continue; }
+    // The newer default Registrations API removed paid_at; use created_at for windowing.
+    $occurredAt = $attrs['created_at'] ?? ($attrs['paid_at'] ?? null);
+    if (!$occurredAt) { continue; }
     try {
-        $paidAtDt = new DateTimeImmutable($paidAt);
+        $occurredAtDt = new DateTimeImmutable($occurredAt);
     } catch (Throwable $e) {
         continue;
     }
-    if ($paidAtDt < $sinceUtc || $paidAtDt > $nowUtc) { continue; }
+    if ($occurredAtDt < $sinceUtc || $occurredAtDt > $nowUtc) { continue; }
 
     $id     = (string)($pay['id'] ?? '');
-    $gross  = ((int)($attrs['total_cents'] ?? 0)) / 100.0;
-    $fee    = ((int)($attrs['fee_cents'] ?? 0)) / 100.0;
+    $gross  = ((int)($attrs['amount_cents'] ?? 0)) / 100.0;
+    $fee    = ((int)($attrs['stripe_fee_cents'] ?? 0)) / 100.0;
     $net    = $gross - $fee;
 
-    $eventId    = $pay['relationships']['event']['data']['id'] ?? null;
-    $eventAttrs = $eventId && isset($lookup['event'][$eventId]) ? $lookup['event'][$eventId] : [];
-    $eventName  = $eventAttrs['name'] ?? 'Event ' . ($eventId ?? '');
-    $eventDate  = $eventAttrs['starts_at'] ?? ($eventAttrs['start_at'] ?? '');
-    $personId   = $pay['relationships']['person']['data']['id'] ?? null;
-    $personAttr = $personId && isset($lookup['person'][$personId]) ? $lookup['person'][$personId] : [];
-    $personName = $personAttr['name'] ?? ($personAttr['first_name'] ?? '') . ' ' . ($personAttr['last_name'] ?? '');
+    $eventId   = $pay['relationships']['event']['data']['id'] ?? null;
+    $eventName = trim((string)($attrs['event_name'] ?? ''));
+    if ($eventName === '') {
+        $eventName = 'Event ' . ($eventId ?? '');
+    }
+
+    $registrationId   = $pay['relationships']['registration']['data']['id'] ?? null;
+    $regAttrs         = $registrationId && isset($registrationLookup[(string)$registrationId]) ? $registrationLookup[(string)$registrationId] : [];
+    $regCreatedAtRaw  = $regAttrs['created_at'] ?? null;
+    $regCreatedAtText = null;
+    if ($regCreatedAtRaw) {
+        try {
+            $regCreatedAtDt  = new DateTimeImmutable($regCreatedAtRaw);
+            $regCreatedAtText = fmt_dt($regCreatedAtDt, $displayTz);
+        } catch (Throwable $e) {
+            $regCreatedAtText = null;
+        }
+    }
+
+    $payerName = trim((string)($attrs['payer_name'] ?? ''));
+    $createdBy = trim((string)($regAttrs['created_by_name'] ?? ''));
+    $personName = $payerName !== '' ? $payerName : ($createdBy !== '' ? $createdBy : 'Unknown person');
+    $paymentMethod = trim((string)($attrs['instrument'] ?? ''));
 
     $descPieces = array_filter([
-        $eventName,
-        $personName ? ('Paid by ' . $personName) : null,
-        $eventDate ? ('Event date: ' . $eventDate) : null,
-        'Paid at: ' . fmt_dt($paidAtDt, $displayTz),
+        'Registration: ' . $eventName,
+        'Person: ' . $personName,
+        $regCreatedAtText ? ('Registered: ' . $regCreatedAtText) : null,
+        'Payment: ' . ($paymentMethod !== '' ? $paymentMethod : 'Unspecified'),
+        'Payment created: ' . fmt_dt($occurredAtDt, $displayTz),
     ]);
     $description = implode(' | ', $descPieces);
 
@@ -279,7 +305,7 @@ foreach ($payments as $pay) {
         $feeLine = [
             'Amount' => round($fee * -1, 2),
             'DetailType' => 'DepositLineDetail',
-            'Description' => 'Fee for ' . $eventName,
+            'Description' => 'Fee for registration ' . $eventName,
             'DepositLineDetail' => [
                 'AccountRef' => [
                     'value' => (string)$feeAccount['Id'],
@@ -300,14 +326,19 @@ foreach ($payments as $pay) {
 
 if (empty($lines)) {
     set_setting($pdo, 'last_registrations_paid_at', $nowUtc->format(DateTimeInterface::ATOM));
-    echo '<h1>Registrations sync</h1><p>No payments found in this window.</p><p><a href="index.php">&larr; Back to dashboard</a></p>';
+    echo '<h1>Registrations sync</h1>';
+    echo '<p>No payments found in this window (' .
+        htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') . ' to ' .
+        htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') . ').</p>';
+    echo '<p>You can widen the window by adding <code>?reset_window=1&backfill_days=30</code> to this URL.</p>';
+    echo '<p><a href="index.php">&larr; Back to dashboard</a></p>';
     exit;
 }
 
 // Build deposit
 $deposit = [
     'TxnDate' => $nowUtc->format('Y-m-d'),
-    'PrivateNote' => 'Registrations paid_at ' . $sinceUtc->format('Y-m-d H:i:s') . ' to ' . $nowUtc->format('Y-m-d H:i:s'),
+    'PrivateNote' => 'Registrations created_at ' . $sinceUtc->format('Y-m-d H:i:s') . ' to ' . $nowUtc->format('Y-m-d H:i:s'),
     'DepositToAccountRef' => [
         'value' => (string)$depositAccount['Id'],
         'name'  => $depositAccount['Name'] ?? $regDepositName,
@@ -400,7 +431,7 @@ try {
 
     <div class="card">
         <p class="muted">
-            Window used (paid_at):
+            Window used (created_at):
             <strong><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
             to
             <strong><?= htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
