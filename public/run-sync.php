@@ -497,9 +497,14 @@ $displayTz = get_display_timezone($pdo);
 // --- Determine sync window ---------------------------------------------------
 
 $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-$lastSyncStr = get_setting($pdo, 'last_completed_at');
+$lastSyncStr  = get_setting($pdo, 'last_completed_at');
+$backfillDays = isset($_GET['backfill_days']) ? max(1, min(90, (int)$_GET['backfill_days'])) : 7;
+$resetWindow  = isset($_GET['reset_window']) && $_GET['reset_window'] === '1';
+$defaultSince = $nowUtc->sub(new DateInterval('P' . $backfillDays . 'D'));
 
-if ($lastSyncStr === null) {
+if ($resetWindow) {
+    $sinceUtc = $defaultSince;
+} elseif ($lastSyncStr === null) {
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
     finish_log(
         $logger,
@@ -522,6 +527,7 @@ if ($lastSyncStr === null) {
             No historical donations were imported. Starting from
             <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>.
         </p>
+        <p class="muted">Need to sweep past days? <a href="?reset_window=1&backfill_days=7">Re-run last 7 days</a></p>
     </div>
     <?php
     $content = ob_get_clean();
@@ -529,34 +535,40 @@ if ($lastSyncStr === null) {
     exit;
 }
 
-try {
-    $sinceUtc = new DateTimeImmutable($lastSyncStr);
-} catch (Throwable $e) {
-    set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
-    finish_log(
-        $logger,
-        $logId,
-        'error',
-        'Invalid last_completed_at value; reset to now for Stripe sync.',
-        $e->getMessage()
-    );
+if (!isset($sinceUtc)) {
+    try {
+        $sinceUtc = new DateTimeImmutable($lastSyncStr);
+    } catch (Throwable $e) {
+        set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+        finish_log(
+            $logger,
+            $logId,
+            'error',
+            'Invalid last_completed_at value; reset to now for Stripe sync.',
+            $e->getMessage()
+        );
 
-    ob_start();
-    ?>
-    <div class="flash error">
-        <span class="tag">Issue</span>
-        <div><strong>Invalid last_completed_at value was stored.</strong> We reset it to now without importing any donations.</div>
-    </div>
-    <div class="card">
-        <p class="muted">
-            New value:
-            <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
-        </p>
-    </div>
-    <?php
-    $content = ob_get_clean();
-    renderLayout('PCO -> QBO Sync', 'PCO -> QBO Sync', 'Invalid sync window', $content);
-    exit;
+        ob_start();
+        ?>
+        <div class="flash error">
+            <span class="tag">Issue</span>
+            <div><strong>Invalid last_completed_at value was stored.</strong> We reset it to now without importing any donations.</div>
+        </div>
+        <div class="card">
+            <p class="muted">
+                New value:
+                <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
+            </p>
+        </div>
+        <?php
+        $content = ob_get_clean();
+        renderLayout('PCO -> QBO Sync', 'PCO -> QBO Sync', 'Invalid sync window', $content);
+        exit;
+    }
+}
+
+if ($sinceUtc >= $nowUtc) {
+    $sinceUtc = $defaultSince;
 }
 
 // --- Build preview of what we would deposit ---------------------------------
@@ -863,6 +875,12 @@ if (!empty($errors)): ?>
                 <p class="section-title">Window used</p>
                 <p class="section-sub">completed_at range (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</p>
             </div>
+            <div class="muted">
+                Quick window reset:
+                <a href="?reset_window=1&backfill_days=1">24h</a> |
+                <a href="?reset_window=1&backfill_days=7">7d</a> |
+                <a href="?reset_window=1&backfill_days=30">30d</a>
+            </div>
         </div>
         <div class="metrics-grid">
             <div class="metric">
@@ -963,5 +981,25 @@ $summaryData = [
 ];
 set_setting($pdo, 'last_stripe_sync_summary', json_encode($summaryData));
 finish_log($logger, $logId, $status, $summary, $details);
+
+// Email alert on error/partial
+$notificationEmail = get_setting($pdo, 'notification_email');
+if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
+    $from   = $config['mail']['from'] ?? null;
+    $mailer = new Mailer($from);
+    $subject = '[PCO->QBO] Stripe sync ' . strtoupper($status);
+    $bodyLines = [
+        'Stripe sync run on ' . $nowUtc->format('Y-m-d H:i:s T'),
+        'Status: ' . $status,
+        'Deposits: ' . count($createdDeposits),
+        'Window: ' . $preview['since']->format('Y-m-d H:i:s') . ' to ' . $preview['until']->format('Y-m-d H:i:s'),
+    ];
+    if (!empty($errors)) {
+        $bodyLines[] = '';
+        $bodyLines[] = 'Errors:';
+        $bodyLines = array_merge($bodyLines, $errors);
+    }
+    $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
+}
 
 renderLayout('PCO -> QBO Stripe Sync Result', 'PCO -> QBO Stripe Sync Result', 'Manual run of Stripe donation deposits', $content);

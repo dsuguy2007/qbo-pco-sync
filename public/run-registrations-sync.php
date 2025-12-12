@@ -7,6 +7,7 @@ require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/PcoClient.php';
 require_once __DIR__ . '/../src/QboClient.php';
 require_once __DIR__ . '/../src/Auth.php';
+require_once __DIR__ . '/../src/Mailer.php';
 
 $webhookSecretValid = false;
 $incomingSecret     = $_GET['webhook_secret'] ?? null;
@@ -183,6 +184,8 @@ $regIncomeName   = get_setting($pdo, 'reg_income_account_name') ?? ($config['qbo
 $regClassName    = get_setting($pdo, 'reg_class_name') ?? '';
 $regLocationName = get_setting($pdo, 'reg_location_name') ?? '';
 $feeAccountName  = get_setting($pdo, 'stripe_fee_account_name') ?? ($config['qbo']['stripe_fee_account'] ?? '');
+
+$notificationEmail = get_setting($pdo, 'notification_email');
 
 $errors = [];
 
@@ -448,6 +451,28 @@ $summaryData = [
     'errors'    => $errors,
 ];
 set_setting($pdo, 'last_registrations_sync_summary', json_encode($summaryData));
+
+if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
+    $from   = $config['mail']['from'] ?? null;
+    $mailer = new Mailer($from);
+    $subject = '[PCO->QBO] Registrations sync ' . strtoupper($status);
+    $bodyLines = [
+        'Registrations sync run on ' . $nowUtc->format('Y-m-d H:i:s T'),
+        'Status: ' . $status,
+        'Payments: ' . count($processedIds),
+        'Window: ' . $sinceUtc->format('Y-m-d H:i:s') . ' to ' . $nowUtc->format('Y-m-d H:i:s'),
+    ];
+    if (!empty($missingPmIds)) {
+        $bodyLines[] = '';
+        $bodyLines[] = 'Missing payment method on payment ids: ' . implode(', ', $missingPmIds);
+    }
+    if (!empty($errors)) {
+        $bodyLines[] = '';
+        $bodyLines[] = 'Errors:';
+        $bodyLines = array_merge($bodyLines, $errors);
+    }
+    $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
