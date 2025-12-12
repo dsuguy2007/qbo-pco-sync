@@ -131,125 +131,262 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Settings - PCO → QBO Sync</title>
+    <title>Settings - PCO &harr; QBO Sync</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700&display=swap');
+        :root {
+            --bg: #0b1224;
+            --panel: rgba(15, 25, 46, 0.78);
+            --card: rgba(22, 32, 55, 0.9);
+            --border: rgba(255, 255, 255, 0.08);
+            --text: #e9eef7;
+            --muted: #9daccc;
+            --accent: #2ea8ff;
+            --accent-strong: #0d7adf;
+            --success: #39d98a;
+            --warn: #f2c94c;
+            --error: #ff7a7a;
+        }
         body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            margin: 20px;
-            line-height: 1.4;
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
+            margin: 0;
+            background: radial-gradient(circle at 15% 20%, rgba(46, 168, 255, 0.12), transparent 25%),
+                        radial-gradient(circle at 85% 10%, rgba(57, 217, 138, 0.15), transparent 22%),
+                        radial-gradient(circle at 70% 70%, rgba(242, 201, 76, 0.08), transparent 30%),
+                        var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        * { box-sizing: border-box; }
+        .page {
+            max-width: 1050px;
+            margin: 0 auto;
+            padding: 2.4rem 1.25rem 3rem;
+        }
+        .hero {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 1.4rem 1.5rem;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 30% 40%, rgba(46,168,255,0.15), transparent 35%),
+                        radial-gradient(circle at 80% 10%, rgba(57,217,138,0.12), transparent 35%);
+            pointer-events: none;
+        }
+        .hero > * { position: relative; z-index: 1; }
+        .eyebrow {
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--muted);
+            font-size: 0.8rem;
+            margin-bottom: 0.25rem;
         }
         h1 {
-            margin-bottom: 0.25rem;
+            margin: 0 0 0.35rem;
+            font-size: 2rem;
+            letter-spacing: -0.01em;
         }
-        h2 {
-            margin-top: 1.5rem;
-            margin-bottom: 0.5rem;
+        .lede {
+            color: var(--muted);
+            margin: 0;
+            max-width: 58ch;
+            line-height: 1.6;
         }
-        .nav {
-            margin-bottom: 1rem;
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.65rem 1rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+            color: #0b1324;
+            font-weight: 700;
+            text-decoration: none;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 10px 25px rgba(13,122,223,0.35);
+            transition: transform 120ms ease, box-shadow 120ms ease, background 150ms ease;
         }
-        .nav a {
-            margin-right: 1rem;
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 14px 30px rgba(13,122,223,0.4);
+        }
+        .btn.secondary {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+            box-shadow: none;
         }
         .flash {
-            padding: 0.5rem 0.75rem;
-            margin-bottom: 1rem;
-            border-radius: 4px;
+            margin-top: 1rem;
+            padding: 0.85rem 1rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 0.75rem;
+            align-items: center;
         }
-        .flash-success {
-            background-color: #e6ffed;
-            border: 1px solid #34c759;
-            color: #03420f;
+        .flash.success {
+            background: rgba(57, 217, 138, 0.12);
+            border-color: rgba(57, 217, 138, 0.35);
         }
-        .flash-error {
-            background-color: #ffecec;
-            border: 1px solid #ff3b30;
-            color: #5f1111;
+        .flash.error {
+            background: rgba(255, 122, 122, 0.12);
+            border-color: rgba(255, 122, 122, 0.35);
         }
-        form {
-            max-width: 720px;
+        .flash .tag {
+            background: rgba(255, 255, 255, 0.06);
+            padding: 0.35rem 0.65rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            border: 1px solid var(--border);
         }
-        fieldset {
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            padding: 0.75rem 1rem 1rem;
-            margin-bottom: 1rem;
+        .form-stack {
+            margin-top: 1.5rem;
+            display: grid;
+            gap: 1rem;
         }
-        legend {
-            padding: 0 0.5rem;
-            font-weight: 600;
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1.2rem 1.25rem;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+        }
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.85rem;
+        }
+        .section-title {
+            margin: 0;
+            font-size: 1.1rem;
+            letter-spacing: -0.01em;
+        }
+        .section-sub {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.95rem;
         }
         .field {
-            margin-bottom: 0.75rem;
+            display: grid;
+            gap: 0.3rem;
+            margin-bottom: 0.85rem;
         }
         .field label {
-            display: block;
-            font-weight: 500;
-            margin-bottom: 0.25rem;
+            font-weight: 700;
+            letter-spacing: -0.01em;
         }
         .field input[type="text"],
         .field input[type="email"] {
             width: 100%;
-            max-width: 420px;
-            padding: 0.35rem 0.45rem;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            font-size: 0.95rem;
+            max-width: 520px;
+            padding: 0.65rem 0.75rem;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.14);
+            background: rgba(255,255,255,0.04);
+            color: var(--text);
+            font-size: 1rem;
+        }
+        .field input:focus {
+            outline: 2px solid rgba(46,168,255,0.4);
+            border-color: rgba(46,168,255,0.45);
         }
         .hint {
-            font-size: 0.8rem;
-            color: #555;
-            margin-top: 0.2rem;
+            font-size: 0.9rem;
+            color: var(--muted);
+            line-height: 1.45;
         }
         .checkbox-row {
-            margin-bottom: 0.75rem;
+            display: grid;
+            gap: 0.35rem;
+            margin-bottom: 0.7rem;
         }
         .checkbox-row label {
-            font-weight: 500;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            letter-spacing: -0.01em;
         }
         .readonly-values {
-            font-size: 0.9rem;
-            color: #333;
+            display: grid;
+            gap: 0.4rem;
+            font-size: 0.95rem;
+            color: var(--text);
         }
         .readonly-values code {
-            font-size: 0.85rem;
+            font-size: 0.9rem;
+            color: #d7e8ff;
+        }
+        .actions {
+            display: flex;
+            justify-content: flex-end;
         }
         button[type="submit"] {
-            padding: 0.4rem 0.9rem;
-            border-radius: 4px;
-            border: 1px solid #0a7c28;
-            background-color: #0a7c28;
-            color: white;
+            border: none;
             cursor: pointer;
-            font-size: 0.95rem;
+            font-size: 1rem;
         }
-        button[type="submit"]:hover {
-            background-color: #096322;
+        @media (max-width: 720px) {
+            .hero { padding: 1.2rem 1.1rem; }
+            .section-header { align-items: flex-start; }
+            .btn.secondary { width: 100%; justify-content: center; }
+            .actions { justify-content: stretch; }
+            .actions .btn { width: 100%; }
         }
     </style>
 </head>
 <body>
-    <h1>Settings</h1>
-    <div class="nav">
-        <a href="index.php">&laquo; Back to Dashboard</a>
+<div class="page">
+    <div class="hero">
+        <div>
+            <div class="eyebrow">Configuration</div>
+            <h1>Settings</h1>
+            <p class="lede">Tune notifications and QuickBooks targets so syncs land exactly where you want them.</p>
+        </div>
+        <a class="btn secondary" href="index.php">&larr; Back to dashboard</a>
     </div>
 
     <?php if ($message): ?>
-        <div class="flash flash-success">
-            <?php echo htmlspecialchars($message, ENT_QUOTES, 'UTF-8'); ?>
+        <div class="flash success">
+            <span class="tag">Saved</span>
+            <div><?php echo htmlspecialchars($message, ENT_QUOTES, 'UTF-8'); ?></div>
         </div>
     <?php endif; ?>
 
     <?php if ($error): ?>
-        <div class="flash flash-error">
-            <?php echo htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?>
+        <div class="flash error">
+            <span class="tag">Issue</span>
+            <div><?php echo htmlspecialchars($error, ENT_QUOTES, 'UTF-8'); ?></div>
         </div>
     <?php endif; ?>
 
-    <form method="post">
-
-        <fieldset>
-            <legend>Notifications</legend>
+    <form method="post" class="form-stack">
+        <div class="card">
+            <div class="section-header">
+                <div>
+                    <p class="eyebrow" style="margin-bottom: 0.35rem;">Notifications</p>
+                    <p class="section-title">Alert routing</p>
+                    <p class="section-sub">Where to send sync errors or partial successes.</p>
+                </div>
+            </div>
             <div class="field">
                 <label for="notification_email">Error / warning notification email</label>
                 <input
@@ -259,15 +396,20 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
                     value="<?php echo htmlspecialchars($notificationEmail, ENT_QUOTES, 'UTF-8'); ?>"
                 >
                 <div class="hint">
-                    If set, the app will send an email when a Stripe or batch sync finishes with errors or a partial success.
+                    If set, the app will send an email when a Stripe or batch sync finishes with errors or partial success.
                     Leave blank to disable email notifications.
                 </div>
             </div>
-        </fieldset>
+        </div>
 
-        <fieldset>
-            <legend>Stripe payout sync (online donations)</legend>
-
+        <div class="card">
+            <div class="section-header">
+                <div>
+                    <p class="eyebrow" style="margin-bottom: 0.35rem;">Stripe payout sync</p>
+                    <p class="section-title">Online donations</p>
+                    <p class="section-sub">Control where Stripe payout deposits and fee lines are booked.</p>
+                </div>
+            </div>
             <div class="field">
                 <label for="deposit_bank_account_name">Deposit bank account (QBO name)</label>
                 <input
@@ -291,8 +433,7 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
                     value="<?php echo htmlspecialchars($incomeAccountName, ENT_QUOTES, 'UTF-8'); ?>"
                 >
                 <div class="hint">
-                    This is used for the gross donation lines (for example:
-                    <code>OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES</code>).
+                    Used for gross donation lines (for example: <code>OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES</code>).
                 </div>
             </div>
 
@@ -305,14 +446,19 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
                     value="<?php echo htmlspecialchars($stripeFeeAccountName, ENT_QUOTES, 'UTF-8'); ?>"
                 >
                 <div class="hint">
-                    This is used for the negative fee lines (for example:
-                    <code>OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES</code>).
+                    Used for the negative fee lines (for example: <code>OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES</code>).
                 </div>
             </div>
-        </fieldset>
+        </div>
 
-        <fieldset>
-            <legend>Batch sync (committed PCO Giving batches)</legend>
+        <div class="card">
+            <div class="section-header">
+                <div>
+                    <p class="eyebrow" style="margin-bottom: 0.35rem;">Batch sync</p>
+                    <p class="section-title">Committed PCO Giving batches</p>
+                    <p class="section-sub">Enable and route deposits created from committed batches.</p>
+                </div>
+            </div>
 
             <div class="checkbox-row">
                 <label>
@@ -325,8 +471,8 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
                     Enable sync of committed PCO Giving batches to QuickBooks
                 </label>
                 <div class="hint">
-                    When enabled, the batch sync will create deposits in QBO for committed batches,
-                    grouping by fund and applying the correct QBO Class and Location based on your fund mapping.
+                    When enabled, the batch sync will create deposits in QBO for committed batches, grouping by fund and applying
+                    the correct QBO Class and Location based on your fund mapping.
                 </div>
             </div>
 
@@ -339,8 +485,7 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
                     value="<?php echo htmlspecialchars($batchDepositBankName, ENT_QUOTES, 'UTF-8'); ?>"
                 >
                 <div class="hint">
-                    Bank account used for deposits created from committed batches.
-                    Defaults to the Stripe deposit account if left the same.
+                    Bank account used for deposits created from committed batches. Defaults to the Stripe deposit account if left the same.
                 </div>
             </div>
 
@@ -353,14 +498,19 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
                     value="<?php echo htmlspecialchars($batchIncomeAccountName, ENT_QUOTES, 'UTF-8'); ?>"
                 >
                 <div class="hint">
-                    Income account used for gross donation lines from committed batches.
-                    Defaults to the Stripe income account if left the same.
+                    Income account used for gross donation lines from committed batches. Defaults to the Stripe income account if left the same.
                 </div>
             </div>
-        </fieldset>
+        </div>
 
-        <fieldset>
-            <legend>Sync windows (read-only)</legend>
+        <div class="card">
+            <div class="section-header">
+                <div>
+                    <p class="eyebrow" style="margin-bottom: 0.35rem;">Sync windows</p>
+                    <p class="section-title">Read-only</p>
+                    <p class="section-sub">Reference for the most recent sync windows.</p>
+                </div>
+            </div>
             <div class="readonly-values">
                 <div>
                     <strong>Last Stripe payout sync window end (UTC):</strong>
@@ -374,15 +524,17 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
                         ? htmlspecialchars($lastBatchCompletedAt, ENT_QUOTES, 'UTF-8')
                         : '<em>Not set yet</em>'; ?>
                 </div>
-                <div class="hint" style="margin-top: 0.35rem;">
-                    These timestamps are advanced automatically each time the sync runs.
-                    If you ever need to reset them manually, you can do so via your database
-                    (in the <code>sync_settings</code> table).
+                <div class="hint">
+                    These timestamps are advanced automatically each time the sync runs. If you ever need to reset them manually,
+                    you can do so via your database (in the <code>sync_settings</code> table).
                 </div>
             </div>
-        </fieldset>
+        </div>
 
-        <button type="submit">Save settings</button>
+        <div class="actions">
+            <button type="submit" class="btn">Save settings</button>
+        </div>
     </form>
+</div>
 </body>
 </html>
