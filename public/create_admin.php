@@ -1,20 +1,43 @@
 <?php
 declare(strict_types=1);
 
-ini_set('display_errors', '1');
-ini_set('display_startup_errors', '1');
-error_reporting(E_ALL);
-
 $config = require __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../src/Db.php';
+require_once __DIR__ . '/../src/Auth.php';
+
+Auth::startSession();
 
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
 } catch (Throwable $e) {
+    http_response_code(500);
     echo '<h1>Error connecting to DB</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
     exit;
+}
+
+$userCount = (int)$pdo->query('SELECT COUNT(*) FROM app_users')->fetchColumn();
+
+// If users exist, ensure the current session is an admin (refresh from DB to avoid stale sessions).
+if ($userCount > 0) {
+    Auth::requireLogin();
+    try {
+        $stmt = $pdo->prepare('SELECT is_admin FROM app_users WHERE id = :id LIMIT 1');
+        $stmt->execute([':id' => $_SESSION['user_id']]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $_SESSION['is_admin'] = !empty($row['is_admin']);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo '<h1>Error checking admin status</h1>';
+        echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
+        exit;
+    }
+    if (empty($_SESSION['is_admin'])) {
+        http_response_code(403);
+        echo 'Admin privileges are required to access this page.';
+        exit;
+    }
 }
 
 $errors = [];
@@ -24,6 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = trim($_POST['username'] ?? '');
     $password = $_POST['password'] ?? '';
     $confirm  = $_POST['password_confirm'] ?? '';
+    $isAdmin  = isset($_POST['is_admin']) ? 1 : 0;
 
     if ($username === '') {
         $errors[] = 'Username is required.';
@@ -38,11 +62,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($errors)) {
         try {
             $hash = password_hash($password, PASSWORD_DEFAULT);
+            if ($userCount === 0) {
+                $isAdmin = 1;
+            }
 
-            $stmt = $pdo->prepare('INSERT INTO app_users (username, password_hash) VALUES (:u, :p)');
+            $stmt = $pdo->prepare('INSERT INTO app_users (username, password_hash, is_admin) VALUES (:u, :p, :a)');
             $stmt->execute([
                 ':u' => $username,
                 ':p' => $hash,
+                ':a' => $isAdmin,
             ]);
             $done = true;
         } catch (Throwable $e) {
@@ -55,7 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Create Admin User</title>
+    <title>Create Admin/User</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700&display=swap');
         :root {
@@ -223,8 +251,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <div class="page">
     <div class="hero">
         <div class="eyebrow">Admin</div>
-        <h1>Create admin user</h1>
-        <p class="lede">Add a login for another administrator.</p>
+        <h1>Create user</h1>
+        <p class="lede"><?= $userCount === 0 ? 'Set up the first admin account.' : 'Add another user (admins only).' ?></p>
     </div>
 
     <?php if ($done): ?>
@@ -263,6 +291,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <label for="password_confirm">Confirm password</label>
                 <input id="password_confirm" name="password_confirm" type="password" required>
             </div>
+
+            <?php if ($userCount > 0): ?>
+                <label style="display:flex;align-items:center;gap:0.45rem;font-weight:600;">
+                    <input type="checkbox" name="is_admin" value="1">
+                    Make this user an admin
+                </label>
+            <?php endif; ?>
 
             <div class="hint">Use a strong password. Usernames must be unique.</div>
 

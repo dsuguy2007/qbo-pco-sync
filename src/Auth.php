@@ -23,6 +23,16 @@ class Auth
         }
     }
 
+    public static function requireAdmin(): void
+    {
+        self::requireLogin();
+        if (empty($_SESSION['is_admin'])) {
+            http_response_code(403);
+            echo 'Admin privileges are required to access this page.';
+            exit;
+        }
+    }
+
     public static function logout(): void
     {
         self::startSession();
