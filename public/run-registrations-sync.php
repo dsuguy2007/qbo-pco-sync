@@ -580,9 +580,9 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
         (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)
     </p>
     <p class="muted">Quick window reset:
-        <a href="?reset_window=1&backfill_days=1">24h</a> |
-        <a href="?reset_window=1&backfill_days=7">7d</a> |
-        <a href="?reset_window=1&backfill_days=30">30d</a>
+        <a style="color: #fff;" href="?reset_window=1&backfill_days=1">24h</a> |
+        <a style="color: #fff;" href="?reset_window=1&backfill_days=7">7d</a> |
+        <a style="color: #fff;" href="?reset_window=1&backfill_days=30">30d</a>
     </p>
     <table>
         <tr><th>Payments processed</th><td><?= count($processedIds) ?></td></tr>

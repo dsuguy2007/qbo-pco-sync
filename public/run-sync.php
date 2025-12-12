@@ -937,9 +937,9 @@ if (!empty($errors)): ?>
             </div>
             <div class="muted">
                 Quick window reset:
-                <a href="?reset_window=1&backfill_days=1">24h</a> |
-                <a href="?reset_window=1&backfill_days=7">7d</a> |
-                <a href="?reset_window=1&backfill_days=30">30d</a>
+                <a style="color: #fff;" href="?reset_window=1&backfill_days=1">24h</a> |
+                <a style="color: #fff;" href="?reset_window=1&backfill_days=7">7d</a> |
+                <a style="color: #fff;" href="?reset_window=1&backfill_days=30">30d</a>
             </div>
         </div>
         <div class="metrics-grid">
