@@ -301,6 +301,15 @@ try {
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 0.8rem;
         }
+        .sync-columns {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 0.85rem;
+        }
+        .tile-stack {
+            display: grid;
+            gap: 0.8rem;
+        }
         .tile {
             display: grid;
             gap: 0.3rem;
@@ -348,6 +357,11 @@ try {
         }
         .footnote {
             margin-top: 1.4rem;
+        }
+        .centered {
+            display: flex;
+            justify-content: center;
+            margin-top: 0.9rem;
         }
         @media (max-width: 720px) {
             .hero { padding: 1.35rem 1.15rem; }
@@ -432,23 +446,30 @@ try {
                     <p class="section-title">Run or inspect data flows</p>
                 </div>
             </div>
-            <div class="action-grid">
-                <a class="tile" href="run-sync-preview.php">
-                    <span class="title">Preview Stripe donations</span>
-                    <span class="desc">Check upcoming donations with the current completed_at filters.</span>
-                </a>
-                <a class="tile" href="run-sync.php">
-                    <span class="title">Immediate Stripe Sync</span>
-                    <span class="desc">Push completed PCO Stripe payouts into QuickBooks.</span>
-                </a>
-                <a class="tile" href="run-batch-sync.php">
-                    <span class="title">Immediate Batch Sync</span>
-                    <span class="desc">Push committed PCO batches into QuickBooks</span>
-                </a>
-                <a class="tile" href="logs.php">
-                    <span class="title">Sync Logs</span>
-                    <span class="desc">Review latest runs, errors, and durations for quick troubleshooting.</span>
-                </a>
+            <div class="sync-columns">
+                <div class="tile-stack">
+                    <a class="tile" href="run-sync-preview.php">
+                        <span class="title">Preview Stripe donations</span>
+                        <span class="desc">Check upcoming donations with the current completed_at filters.</span>
+                    </a>
+                    <a class="tile" href="run-sync.php">
+                        <span class="title">Immediate Stripe Sync</span>
+                        <span class="desc">Push completed PCO Stripe payouts into QuickBooks.</span>
+                    </a>
+                </div>
+                <div class="tile-stack">
+                    <a class="tile" href="run-batch-preview.php">
+                        <span class="title">Batch preview</span>
+                        <span class="desc">Inspect committed batches and totals before syncing to QBO.</span>
+                    </a>
+                    <a class="tile" href="run-batch-sync.php">
+                        <span class="title">Immediate Batch Sync</span>
+                        <span class="desc">Push committed PCO batches into QuickBooks</span>
+                    </a>
+                </div>
+            </div>
+            <div class="centered">
+                <a class="btn secondary" href="logs.php">View sync logs</a>
             </div>
         </div>
 
