@@ -7,6 +7,12 @@ $config = require __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/PcoClient.php';
 require_once __DIR__ . '/../src/Auth.php';
+
+// First-run helper: if no .env present, redirect to setup.
+if (!file_exists(__DIR__ . '/../config/.env')) {
+    header('Location: setup.php');
+    exit;
+}
 Auth::requireLogin();
 // ---------------------------------------------------------------
 // DB connection
