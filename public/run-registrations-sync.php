@@ -81,14 +81,16 @@ function acquire_db_lock(PDO $pdo, string $name, int $ttlSeconds = 900): ?string
 
     $stmt = $pdo->prepare(
         'UPDATE sync_settings
-            SET setting_value = :owner, updated_at = NOW()
+            SET setting_value = :owner_set, updated_at = NOW()
           WHERE setting_key = :key
-            AND (TIMESTAMPDIFF(SECOND, updated_at, NOW()) > :ttl OR setting_value = \'\' OR setting_value = :owner)'
+            AND (TIMESTAMPDIFF(SECOND, updated_at, NOW()) > :ttl OR setting_value = :empty OR setting_value = :owner_match)'
     );
     $stmt->execute([
-        ':owner' => $owner,
-        ':key'   => $key,
-        ':ttl'   => $ttlSeconds,
+        ':owner_set'   => $owner,
+        ':key'         => $key,
+        ':ttl'         => $ttlSeconds,
+        ':empty'       => '',
+        ':owner_match' => $owner,
     ]);
 
     if ($stmt->rowCount() === 1) {
