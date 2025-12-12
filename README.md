@@ -50,9 +50,9 @@ Bridge Planning Center Giving data (Stripe payouts and committed batches) into Q
    - Login, connect QuickBooks, and verify PCO configuration.
 
 8) **Webhooks & scheduling**
-   - Add `webhook_secret` to `config/config.php`.
-   - Point PCO webhooks to `public/pco-webhook.php` with that secret; the webhook handler routes batch commits and donation completions.
-   - Webhooks do not currently cover Registrations; schedule `run-registrations-sync.php?webhook_secret=YOUR_SECRET` via cron/task runner to pull recent Registrations payments. NOTE: Registrations payments sync is currently in progress and so may not work properly.
+   - Add `webhook_secret` to `config/config.php`; set the same value as the PCO webhook `authenticity_secret`.
+   - Point PCO webhooks to `public/pco-webhook.php`; it verifies the `X-PCO-Webhooks-Authenticity` HMAC header and routes batch commits and donation completions.
+   - Webhooks do not currently cover Registrations; schedule `run-registrations-sync.php?webhook_secret=YOUR_SECRET` via cron/task runner to pull recent Registrations payments.
 
 ## Usage highlights
 - **Connect QuickBooks**: `oauth-start.php` handles the OAuth flow and stores tokens.

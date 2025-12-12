@@ -3,22 +3,25 @@ declare(strict_types=1);
 
 $config = require __DIR__ . '/../config/config.php';
 
-// Shared secret check
+// Verify webhook authenticity using HMAC (PCO Webhooks).
 $secret = $config['webhook_secret'] ?? null;
+$raw    = file_get_contents('php://input');
+
 if (!$secret) {
     http_response_code(500);
     echo 'Webhook secret not configured.';
     exit;
 }
 
-$provided = $_SERVER['HTTP_X_WEBHOOK_SECRET'] ?? ($_GET['secret'] ?? '');
-if (!hash_equals($secret, (string)$provided)) {
+$providedSig = $_SERVER['HTTP_X_PCO_WEBHOOKS_AUTHENTICITY'] ?? '';
+$expectedSig = hash_hmac('sha256', $raw, $secret);
+
+if (!hash_equals($expectedSig, (string)$providedSig)) {
     http_response_code(403);
-    echo 'Invalid webhook secret.';
+    echo 'Invalid webhook signature.';
     exit;
 }
 
-$raw = file_get_contents('php://input');
 $payload = json_decode($raw, true);
 if (!is_array($payload)) {
     http_response_code(400);

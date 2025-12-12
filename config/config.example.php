@@ -19,6 +19,9 @@ return [
         'charset' => 'utf8mb4',
     ],
 
+    // Shared secret for webhook verification (PCO authenticity_secret)
+    'webhook_secret' => 'CHANGE_ME_WEBHOOK_SECRET',
+
     'qbo' => [
         // Intuit app credentials (do NOT commit real values to GitHub)
         'client_id'     => 'YOUR_QBO_CLIENT_ID',
@@ -45,6 +48,11 @@ return [
          */
         'app_id' => 'YOUR_PCO_APP_ID',
         'secret' => 'YOUR_PCO_PERSONAL_ACCESS_TOKEN',
+    ],
+
+    'mail' => [
+        // Optional default From: address for notification emails
+        'from' => 'notifications@example.org',
     ],
 
     'app' => [
