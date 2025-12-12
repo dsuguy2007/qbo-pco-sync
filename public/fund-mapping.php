@@ -1,13 +1,13 @@
 <?php
 declare(strict_types=1);
 
-
 // Load config and common classes
 $config = require __DIR__ . '/../config/config.php';
 require_once __DIR__ . '/../src/Db.php';
 require_once __DIR__ . '/../src/PcoClient.php';
 require_once __DIR__ . '/../src/Auth.php';
 Auth::requireLogin();
+
 // ---- DB connection via Db helper ----
 try {
     $db  = Db::getInstance($config['db']);
@@ -99,130 +99,319 @@ try {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Fund → QBO Class/Location Mapping</title>
+    <title>Fund &rarr; QBO Class/Location Mapping</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700&display=swap');
+        :root {
+            --bg: #0b1224;
+            --panel: rgba(15, 25, 46, 0.78);
+            --card: rgba(22, 32, 55, 0.9);
+            --border: rgba(255, 255, 255, 0.08);
+            --text: #e9eef7;
+            --muted: #9daccc;
+            --accent: #2ea8ff;
+            --accent-strong: #0d7adf;
+            --success: #39d98a;
+            --warn: #f2c94c;
+            --error: #ff7a7a;
+        }
         body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            margin: 2rem;
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
+            margin: 0;
+            background: radial-gradient(circle at 15% 20%, rgba(46, 168, 255, 0.12), transparent 25%),
+                        radial-gradient(circle at 85% 10%, rgba(57, 217, 138, 0.15), transparent 22%),
+                        radial-gradient(circle at 70% 70%, rgba(242, 201, 76, 0.08), transparent 30%),
+                        var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        * { box-sizing: border-box; }
+        .page {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2.4rem 1.25rem 3rem;
+        }
+        .hero {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 1.4rem 1.5rem;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 30% 40%, rgba(46,168,255,0.15), transparent 35%),
+                        radial-gradient(circle at 80% 10%, rgba(57,217,138,0.12), transparent 35%);
+            pointer-events: none;
+        }
+        .hero > * { position: relative; z-index: 1; }
+        .eyebrow {
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--muted);
+            font-size: 0.8rem;
+            margin-bottom: 0.25rem;
+        }
+        h1 {
+            margin: 0 0 0.35rem;
+            font-size: 2rem;
+            letter-spacing: -0.01em;
+        }
+        .lede {
+            color: var(--muted);
+            margin: 0;
+            max-width: 64ch;
+            line-height: 1.6;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.65rem 1rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+            color: #0b1324;
+            font-weight: 700;
+            text-decoration: none;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 10px 25px rgba(13,122,223,0.35);
+            transition: transform 120ms ease, box-shadow 120ms ease, background 150ms ease;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 14px 30px rgba(13,122,223,0.4);
+        }
+        .btn.secondary {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+            box-shadow: none;
+        }
+        .flash {
+            margin-top: 1rem;
+            padding: 0.85rem 1rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 0.75rem;
+            align-items: center;
+        }
+        .flash.success {
+            background: rgba(57, 217, 138, 0.12);
+            border-color: rgba(57, 217, 138, 0.35);
+        }
+        .flash.error {
+            background: rgba(255, 122, 122, 0.12);
+            border-color: rgba(255, 122, 122, 0.35);
+        }
+        .flash .tag {
+            background: rgba(255, 255, 255, 0.06);
+            padding: 0.35rem 0.65rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            border: 1px solid var(--border);
+        }
+        .form-stack {
+            margin-top: 1.5rem;
+            display: grid;
+            gap: 1rem;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1.2rem 1.25rem;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+        }
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.85rem;
+        }
+        .section-title {
+            margin: 0;
+            font-size: 1.1rem;
+            letter-spacing: -0.01em;
+        }
+        .section-sub {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.95rem;
+        }
+        .table-wrap {
+            overflow: auto;
+            border-radius: 10px;
+            border: 1px solid var(--border);
         }
         table {
-            border-collapse: collapse;
             width: 100%;
-            max-width: 1100px;
+            border-collapse: collapse;
+            min-width: 720px;
+            background: rgba(255,255,255,0.01);
         }
         th, td {
-            border: 1px solid #ccc;
-            padding: 0.4rem 0.6rem;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            padding: 0.65rem 0.75rem;
             vertical-align: top;
-            font-size: 0.9rem;
+            font-size: 0.95rem;
         }
         th {
-            background: #f5f5f5;
             text-align: left;
+            color: var(--muted);
+            font-weight: 700;
+            background: rgba(255,255,255,0.03);
+            position: sticky;
+            top: 0;
+            backdrop-filter: blur(8px);
+            z-index: 1;
+        }
+        tr:hover td {
+            background: rgba(46,168,255,0.03);
         }
         input[type="text"] {
             width: 100%;
-            box-sizing: border-box;
+            padding: 0.6rem 0.65rem;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.14);
+            background: rgba(255,255,255,0.04);
+            color: var(--text);
+            font-size: 0.95rem;
         }
-        .flash {
-            padding: 0.6rem 0.8rem;
-            margin-bottom: 1rem;
-            background: #e6ffed;
-            border: 1px solid #b7eb8f;
-        }
-        .error {
-            padding: 0.6rem 0.8rem;
-            margin-bottom: 1rem;
-            background: #ffecec;
-            border: 1px solid #ffaeae;
-        }
-        .top-nav a {
-            display: inline-block;
-            margin-bottom: 1rem;
+        input[type="text"]:focus {
+            outline: 2px solid rgba(46,168,255,0.4);
+            border-color: rgba(46,168,255,0.45);
         }
         .small {
-            font-size: 0.8rem;
-            color: #666;
+            font-size: 0.9rem;
+            color: var(--muted);
+            line-height: 1.5;
         }
-        .sticky-header {
-            position: sticky;
-            top: 0;
-            z-index: 2;
+        .actions {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 0.9rem;
+        }
+        button[type="submit"] {
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+        @media (max-width: 720px) {
+            .hero { padding: 1.2rem 1.1rem; }
+            .section-header { align-items: flex-start; }
+            .btn.secondary { width: 100%; justify-content: center; }
+            .actions { justify-content: stretch; }
+            .actions .btn { width: 100%; }
         }
     </style>
 </head>
 <body>
+<div class="page">
+    <div class="hero">
+        <div>
+            <div class="eyebrow">Mappings</div>
+            <h1>Fund to QBO mapping</h1>
+            <p class="lede">Assign QuickBooks Class and Location names for each Planning Center fund before syncing deposits.</p>
+        </div>
+        <a class="btn secondary" href="index.php">&larr; Back to dashboard</a>
+    </div>
 
-<div class="top-nav">
-    <a href="index.php">&larr; Back to main dashboard</a>
+    <?php if ($flashMessage): ?>
+        <div class="flash success">
+            <span class="tag">Saved</span>
+            <div><?= htmlspecialchars($flashMessage, ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($errorMessage): ?>
+        <div class="flash error">
+            <span class="tag">Issue</span>
+            <div><?= htmlspecialchars($errorMessage, ENT_QUOTES, 'UTF-8') ?></div>
+        </div>
+    <?php endif; ?>
+
+    <form method="post" class="form-stack">
+        <div class="card">
+            <div class="section-header">
+                <div>
+                    <p class="eyebrow" style="margin-bottom: 0.35rem;">Fund mapping</p>
+                    <p class="section-title">Class and location targets</p>
+                    <p class="section-sub">Use the exact QuickBooks names to avoid sync errors.</p>
+                </div>
+                <button type="submit" class="btn">Save mappings</button>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th style="width: 15%;">PCO Fund ID</th>
+                        <th style="width: 30%;">PCO Fund Name</th>
+                        <th style="width: 27%;">QBO Class Name<br><span class="small">e.g. Trinity - General</span></th>
+                        <th style="width: 28%;">QBO Location Name<br><span class="small">e.g. Moundsville</span></th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($funds as $fund): ?>
+                        <?php
+                        $fid   = isset($fund['id']) ? (string)$fund['id'] : '';
+                        $attrs = $fund['attributes'] ?? [];
+                        $fname = isset($attrs['name']) ? (string)$attrs['name'] : '';
+
+                        $map   = $existingMappings[$fid] ?? null;
+                        ?>
+                        <tr>
+                            <td>
+                                <?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>
+                                <input type="hidden"
+                                       name="fund[<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>][pco_fund_id]"
+                                       value="<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>">
+                            </td>
+                            <td>
+                                <?= htmlspecialchars($fname, ENT_QUOTES, 'UTF-8') ?>
+                                <input type="hidden"
+                                       name="fund[<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>][pco_fund_name]"
+                                       value="<?= htmlspecialchars($fname, ENT_QUOTES, 'UTF-8') ?>">
+                            </td>
+                            <td>
+                                <input type="text"
+                                       name="fund[<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>][qbo_class_name]"
+                                       value="<?= htmlspecialchars($map['qbo_class_name'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
+                            </td>
+                            <td>
+                                <input type="text"
+                                       name="fund[<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>][qbo_location_name]"
+                                       value="<?= htmlspecialchars($map['qbo_location_name'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="small" style="margin-top: 0.65rem;">
+                These mappings are used when creating deposits in QuickBooks. Leave Class or Location blank if you do not use them.
+            </div>
+
+            <div class="actions">
+                <button type="submit" class="btn">Save mappings</button>
+            </div>
+        </div>
+    </form>
 </div>
-
-<h1>Fund → QBO Class / Location Mapping</h1>
-<p class="small">
-    For each Planning Center <strong>Fund</strong>, enter the QuickBooks <strong>Class</strong> and <strong>Location</strong> (Department)
-    names exactly as they appear in QBO.<br>
-    We’ll use these when creating deposits.
-</p>
-
-<?php if ($flashMessage): ?>
-    <div class="flash"><?= htmlspecialchars($flashMessage, ENT_QUOTES, 'UTF-8') ?></div>
-<?php endif; ?>
-
-<?php if ($errorMessage): ?>
-    <div class="error"><?= htmlspecialchars($errorMessage, ENT_QUOTES, 'UTF-8') ?></div>
-<?php endif; ?>
-
-<form method="post">
-    <table>
-        <thead class="sticky-header">
-        <tr>
-            <th>PCO Fund ID</th>
-            <th>PCO Fund Name</th>
-            <th>QBO Class Name<br><span class="small">e.g. <em>Trinity – General</em></span></th>
-            <th>QBO Location Name<br><span class="small">e.g. <em>Moundsville</em></span></th>
-        </tr>
-        </thead>
-        <tbody>
-        <?php foreach ($funds as $fund): ?>
-            <?php
-            $fid   = isset($fund['id']) ? (string)$fund['id'] : '';
-            $attrs = $fund['attributes'] ?? [];
-            $fname = isset($attrs['name']) ? (string)$attrs['name'] : '';
-
-            $map   = $existingMappings[$fid] ?? null;
-            ?>
-            <tr>
-                <td>
-                    <?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>
-                    <input type="hidden"
-                           name="fund[<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>][pco_fund_id]"
-                           value="<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>">
-                </td>
-                <td>
-                    <?= htmlspecialchars($fname, ENT_QUOTES, 'UTF-8') ?>
-                    <input type="hidden"
-                           name="fund[<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>][pco_fund_name]"
-                           value="<?= htmlspecialchars($fname, ENT_QUOTES, 'UTF-8') ?>">
-                </td>
-                <td>
-                    <input type="text"
-                           name="fund[<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>][qbo_class_name]"
-                           value="<?= htmlspecialchars($map['qbo_class_name'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
-                </td>
-                <td>
-                    <input type="text"
-                           name="fund[<?= htmlspecialchars($fid, ENT_QUOTES, 'UTF-8') ?>][qbo_location_name]"
-                           value="<?= htmlspecialchars($map['qbo_location_name'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
-                </td>
-            </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
-
-    <p style="margin-top: 1rem;">
-        <button type="submit">Save mappings</button>
-    </p>
-</form>
-
 </body>
 </html>
