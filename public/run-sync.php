@@ -4,34 +4,20 @@ declare(strict_types=1);
 $config = require __DIR__ . '/../config/config.php';
 
 require_once __DIR__ . '/../src/Db.php';
+require_once __DIR__ . '/../src/PcoClient.php';
+require_once __DIR__ . '/../src/SyncService.php';
 require_once __DIR__ . '/../src/QboClient.php';
-require_once __DIR__ . '/../src/Auth.php';
 require_once __DIR__ . '/../src/SyncLogger.php';
-require_once __DIR__ . '/../src/Mailer.php'; 
+require_once __DIR__ . '/../src/Auth.php';
 
 Auth::requireLogin();
-// DEBUG: prove we are in the correct run-sync.php
-$debugRoot = dirname(__DIR__); // /qbo-pco-sync
-$debugFile = $debugRoot . '/email-debug.log';
-
-file_put_contents(
-    $debugFile,
-    date('c') . " run-sync.php TOP reached\n",
-    FILE_APPEND
-);
 
 /**
- * Read a setting from the sync_settings table.
+ * Get a setting from sync_settings.
  */
 function get_setting(PDO $pdo, string $key): ?string
 {
-    $stmt = $pdo->prepare(
-        'SELECT setting_value 
-           FROM sync_settings 
-          WHERE setting_key = :key 
-          ORDER BY id DESC 
-          LIMIT 1'
-    );
+    $stmt = $pdo->prepare('SELECT setting_value FROM sync_settings WHERE setting_key = :key ORDER BY id DESC LIMIT 1');
     $stmt->execute([':key' => $key]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($row && isset($row['setting_value'])) {
@@ -41,714 +27,422 @@ function get_setting(PDO $pdo, string $key): ?string
 }
 
 /**
- * Write a setting to the sync_settings table (one row per key).
+ * Set a setting in sync_settings (one row per key).
  */
 function set_setting(PDO $pdo, string $key, string $value): void
 {
+    // Ensure only one row per setting_key
     $stmt = $pdo->prepare('DELETE FROM sync_settings WHERE setting_key = :key');
     $stmt->execute([':key' => $key]);
 
-    $stmt = $pdo->prepare(
-        'INSERT INTO sync_settings (setting_key, setting_value) 
-         VALUES (:key, :value)'
-    );
+    $stmt = $pdo->prepare('INSERT INTO sync_settings (setting_key, setting_value) VALUES (:key, :value)');
     $stmt->execute([
         ':key'   => $key,
         ':value' => $value,
     ]);
 }
 
-function send_sync_email_if_needed(
-    PDO $pdo,
-    array $config,
-    string $syncLabel,
-    string $status,
-    string $summary,
-    ?string $details
-): void {
-    // Debug log for the helper itself
-    $root    = dirname(__DIR__); // /qbo-pco-sync
-    $logFile = $root . '/email-debug.log';
-
-    $notificationEmail = get_setting($pdo, 'notification_email');
-
-    $logLines = [];
-    $logLines[] = sprintf(
-        "[%s] send_sync_email_if_needed called",
-        date('c')
-    );
-    $logLines[] = '  syncLabel:          ' . $syncLabel;
-    $logLines[] = '  status:             ' . $status;
-    $logLines[] = '  notification_email: ' . ($notificationEmail ?? 'NULL');
-    $logLines[] = '';
-
-    @file_put_contents($logFile, implode("\n", $logLines) . "\n", FILE_APPEND);
-
-    // If no email configured or status is success, skip sending
-    if (!$notificationEmail || !in_array($status, ['error', 'partial'], true)) {
-        $skipLines = [];
-        $skipLines[] = sprintf(
-            "[%s] Skipping email send (either no email set or status not error/partial).",
-            date('c')
-        );
-        $skipLines[] = str_repeat('-', 60);
-        @file_put_contents($logFile, implode("\n", $skipLines) . "\n", FILE_APPEND);
-        return;
-    }
-
-    $from   = $config['mail']['from'] ?? null;
-    $mailer = new Mailer($from);
-
-    $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-
-    $subject = "[PCO→QBO] {$syncLabel} sync " . strtoupper($status);
-    $bodyLines = [
-        "{$syncLabel} sync run on " . $nowUtc->format('Y-m-d H:i:s T'),
-        '',
-        'Status: ' . $status,
-        $summary,
+/**
+ * Build a deterministic fingerprint for a Stripe deposit so we can avoid
+ * creating duplicates if the sync is re-run.
+ *
+ * We intentionally only hash the location key, bank account id, and line
+ * details (amounts/classes), not volatile fields like TxnDate.
+ */
+function build_stripe_deposit_fingerprint(array $deposit, string $locKey): string
+{
+    $payloadForHash = [
+        'locKey' => $locKey,
+        'bank'   => $deposit['DepositToAccountRef']['value'] ?? null,
+        'lines'  => $deposit['Line'] ?? [],
     ];
 
-    if (!empty($details)) {
-        $bodyLines[] = '';
-        $bodyLines[] = 'Details:';
-        $bodyLines[] = $details;
-    }
-
-    $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
+    return hash(
+        'sha256',
+        json_encode($payloadForHash, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+    );
 }
 
-
-
 /**
- * Low-level helper to call the PCO API.
+ * Check whether we've already synced a Stripe deposit with this fingerprint.
  */
-function pco_request(array $pcoConfig, string $path, array $query = []): array
+function has_synced_stripe_deposit(PDO $pdo, string $fingerprint): bool
 {
-    $baseUrl = rtrim($pcoConfig['base_url'] ?? 'https://api.planningcenteronline.com', '/');
-    $url     = $baseUrl . $path;
-
-    if (!empty($query)) {
-        $url .= '?' . http_build_query($query);
-    }
-
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 30,
-        CURLOPT_HTTPAUTH       => CURLAUTH_BASIC,
-        CURLOPT_USERPWD        => $pcoConfig['app_id'] . ':' . $pcoConfig['secret'],
-        CURLOPT_HTTPHEADER     => ['Accept: application/json'],
+    $stmt = $pdo->prepare('SELECT 1 FROM synced_deposits WHERE type = :type AND fingerprint = :fp LIMIT 1');
+    $stmt->execute([
+        ':type' => 'stripe',
+        ':fp'   => $fingerprint,
     ]);
 
-    $body = curl_exec($ch);
-    if ($body === false) {
-        $err = curl_error($ch);
-        curl_close($ch);
-        throw new RuntimeException('Error calling PCO: ' . $err);
-    }
-
-    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($status < 200 || $status >= 300) {
-        throw new RuntimeException('PCO HTTP error ' . $status . ': ' . $body);
-    }
-
-    $decoded = json_decode($body, true);
-    if (!is_array($decoded)) {
-        throw new RuntimeException(
-            'PCO JSON decode error: ' . json_last_error_msg() . ' | Raw body: ' . $body
-        );
-    }
-
-    return $decoded;
+    return (bool)$stmt->fetchColumn();
 }
 
 /**
- * Fetch Stripe-like donations (card/ach, succeeded, completed_at in window).
- * Returns array of donations with designations attached.
+ * Record that we've successfully synced a Stripe deposit with this fingerprint.
  */
-function get_stripe_donations(
-    array $pcoConfig,
-    DateTimeImmutable $windowStart,
-    DateTimeImmutable $windowEnd
-): array {
-    $resp = pco_request(
-        $pcoConfig,
-        '/giving/v2/donations',
-        [
-            'per_page' => 100,
-            'order'    => 'completed_at',
-        ]
+function mark_synced_stripe_deposit(PDO $pdo, string $fingerprint): void
+{
+    $stmt = $pdo->prepare(
+        'INSERT IGNORE INTO synced_deposits (type, fingerprint, created_at)
+         VALUES (:type, :fp, :created_at)'
     );
 
-    $donations = [];
-
-    foreach ($resp['data'] ?? [] as $don) {
-        $id    = (string)($don['id'] ?? '');
-        $attrs = $don['attributes'] ?? [];
-
-        if ($id === '') {
-            continue;
-        }
-
-        $paymentMethod = (string)($attrs['payment_method'] ?? '');
-        $paymentStatus = (string)($attrs['payment_status'] ?? '');
-        $completedStr  = $attrs['completed_at'] ?? null;
-
-        if (!in_array($paymentMethod, ['card', 'ach'], true)) {
-            continue;
-        }
-        if ($paymentStatus !== 'succeeded') {
-            continue;
-        }
-        if (!$completedStr) {
-            continue;
-        }
-
-        try {
-            $completedAt = new DateTimeImmutable($completedStr);
-        } catch (Throwable $e) {
-            continue;
-        }
-
-        // Only within our window (strictly > start, <= end)
-        if (!($completedAt > $windowStart && $completedAt <= $windowEnd)) {
-            continue;
-        }
-
-        $feeCents    = (int)($attrs['fee_cents'] ?? 0);       // often negative
-        $amountCents = (int)($attrs['amount_cents'] ?? 0);
-
-        // Fetch designations for this donation
-        $desResp = pco_request(
-            $pcoConfig,
-            '/giving/v2/donations/' . rawurlencode($id) . '/designations',
-            [
-                'per_page' => 100,
-            ]
-        );
-
-        $designations = [];
-        $totalDesCents = 0;
-
-        foreach ($desResp['data'] ?? [] as $des) {
-            $dAttrs = $des['attributes'] ?? [];
-            $rels   = $des['relationships'] ?? [];
-            $fund   = $rels['fund']['data'] ?? null;
-
-            if (!$fund) {
-                continue;
-            }
-
-            $fundId      = (string)($fund['id'] ?? '');
-            $desCents    = (int)($dAttrs['amount_cents'] ?? 0);
-
-            if ($fundId === '' || $desCents === 0) {
-                continue;
-            }
-
-            $totalDesCents += $desCents;
-
-            $designations[] = [
-                'fund_id'      => $fundId,
-                'amount_cents' => $desCents,
-            ];
-        }
-
-        if (empty($designations) || $totalDesCents === 0) {
-            continue;
-        }
-
-        // Allocate fee across designations (proportionally)
-        foreach ($designations as $idx => $d) {
-            $share = $d['amount_cents'] / $totalDesCents;
-            $designations[$idx]['fee_cents'] = (int)round($feeCents * $share);
-        }
-
-        $donations[] = [
-            'id'            => $id,
-            'completed_at'  => $completedAt,
-            'amount_cents'  => $amountCents,
-            'fee_cents'     => $feeCents,
-            'payment_method'=> $paymentMethod,
-            'designations'  => $designations,
-        ];
-    }
-
-    return $donations;
+    $stmt->execute([
+        ':type'       => 'stripe',
+        ':fp'         => $fingerprint,
+        ':created_at' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s'),
+    ]);
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap DB / clients / logger
-// ---------------------------------------------------------------------------
+// --- Bootstrap DB / clients --------------------------------------------------
 
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
 } catch (Throwable $e) {
     http_response_code(500);
-    echo '<h1>Stripe sync error</h1>';
+    echo '<h1>Sync error</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
     exit;
 }
 
-$logger = new SyncLogger($pdo);
-$logId  = $logger->start('stripe');
-
-$pcoConfig = $config['pco'] ?? [];
-if (empty($pcoConfig['app_id']) || empty($pcoConfig['secret'])) {
-    $status  = 'error';
-    $summary = 'PCO credentials not configured.';
-    $details = 'Missing pco.app_id or pco.secret in config.php.';
-
-    $logger->finish($logId, $status, $summary, $details);
-    send_sync_email_if_needed($pdo, $config, 'Stripe', $status, $summary, $details);
-
+try {
+    $pco = new PcoClient($config);
+} catch (Throwable $e) {
     http_response_code(500);
-    echo '<h1>PCO client error</h1>';
-    echo '<p>PCO credentials are not configured. Please set pco.app_id and pco.secret in config.php.</p>';
+    echo '<h1>PCO error</h1>';
+    echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
     exit;
 }
-
-
-$errors          = [];
-$createdDeposits = [];
-$totalDonations  = 0;
 
 try {
     $qbo = new QboClient($pdo, $config);
 } catch (Throwable $e) {
-    $errors[] = 'Error creating QBO client: ' . $e->getMessage();
-    $status   = 'error';
-    $summary  = 'Failed to create QBO client.';
-    $details  = $errors[0];
-
-    $logger->finish($logId, $status, $summary, $details);
-    send_sync_email_if_needed($pdo, $config, 'Stripe', $status, $summary, $details);
-
     http_response_code(500);
-    echo '<h1>QBO client error</h1>';
+    echo '<h1>QBO error</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
     exit;
 }
 
+$service = new SyncService($pdo, $pco);
 
-// ---------------------------------------------------------------------------
-// Determine sync window based on Donation.completed_at
-// ---------------------------------------------------------------------------
+// --- Determine sync window ---------------------------------------------------
 
 $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-$lastCompletedStr = get_setting($pdo, 'last_completed_at');
 
-if ($lastCompletedStr) {
-    try {
-        $sinceUtc = new DateTimeImmutable($lastCompletedStr);
-    } catch (Throwable $e) {
-        $sinceUtc = $nowUtc;
-    }
-} else {
-    // First-ever run: initialize window and exit without backfilling
+// last_completed_at is stored as ISO8601 in UTC.
+$lastSyncStr = get_setting($pdo, 'last_completed_at');
+
+if ($lastSyncStr === null) {
+    // First run: we *intentionally* do NOT backfill history.
+    // We set last_completed_at to "now" and exit.
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
-
-    $summary = 'Initial Stripe sync run: window initialized, no donations processed.';
-    $logger->finish($logId, 'success', $summary, null);
     ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>PCO → QBO Stripe Sync</title>
-        <style>
-            body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-            .muted { font-size: 0.9rem; color: #666; }
-        </style>
-    </head>
-    <body>
-    <h1>PCO → QBO Stripe Sync</h1>
-    <p>This is the first time Stripe sync has been run.</p>
-    <p class="muted">
-        We have initialized the sync window at
-        <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>.
-        No historical Stripe donations were synced. Next run will pick up donations completed after this time.
-    </p>
-    <p><a href="index.php">&larr; Back to dashboard</a></p>
-    </body>
-    </html>
-    <?php
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PCO &rarr; QBO Sync</title>
+    <style>
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
+        .muted { font-size: 0.9rem; color: #666; }
+    </style>
+</head>
+<body>
+<h1>PCO &rarr; QBO Sync</h1>
+<p>This is the first time the Stripe sync has been run.</p>
+<p class="muted">
+    We have recorded the current time as the starting point for future syncs:
+    <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>.
+    No historical donations were imported.
+</p>
+<p><a href="index.php">&larr; Back to dashboard</a></p>
+</body>
+</html>
+<?php
     exit;
 }
 
-// ---------------------------------------------------------------------------
-// Look up QBO accounts and fund mappings
-// ---------------------------------------------------------------------------
+try {
+    $sinceUtc = new DateTimeImmutable($lastSyncStr);
+} catch (Throwable $e) {
+    // If the stored value is bad, fall back to "now" and don't sync anything.
+    set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+    ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PCO &rarr; QBO Sync</title>
+    <style>
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
+        .error { padding: 0.6rem 0.8rem; background: #ffecec; border: 1px solid #ffaeae; margin-bottom: 1rem; }
+        .muted { font-size: 0.9rem; color: #666; }
+    </style>
+</head>
+<body>
+<h1>PCO &rarr; QBO Sync</h1>
+<div class="error">
+    <strong>Invalid last_completed_at value was stored.</strong>
+    We reset it to now without importing any donations.
+</div>
+<p class="muted">
+    New value:
+    <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
+</p>
+<p><a href="index.php">&larr; Back to dashboard</a></p>
+</body>
+</html>
+<?php
+    exit;
+}
 
-$depositBankName = get_setting($pdo, 'deposit_bank_account_name')
-    ?? 'TRINITY 2000 CHECKING';
-
-$incomeAccountName = get_setting($pdo, 'income_account_name')
-    ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
-
-$feeAccountName = get_setting($pdo, 'fee_account_name')
-    ?? 'OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES';
+// --- Build preview of what we *would* deposit --------------------------------
 
 try {
-    // Bank account – match by simple Name
-    $bankAccount = $qbo->getAccountByName($depositBankName, false);
+    $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
+} catch (Throwable $e) {
+    http_response_code(500);
+    echo '<h1>Sync error</h1>';
+    echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
+    exit;
+}
+
+// If there are no funds to deposit, simply move the window forward.
+if (empty($preview['funds'])) {
+    set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+    ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PCO &rarr; QBO Sync</title>
+    <style>
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
+        .muted { font-size: 0.9rem; color: #666; }
+    </style>
+</head>
+<body>
+<h1>PCO &rarr; QBO Sync</h1>
+<p>No eligible Stripe donations were found to sync in this window.</p>
+<p class="muted">
+    Last completed sync window is now set to:
+    <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong> (based on completed_at).
+</p>
+<p><a href="index.php">&larr; Back to dashboard</a></p>
+</body>
+</html>
+<?php
+    exit;
+}
+
+// --- Look up QBO accounts we need --------------------------------------------
+
+$errors          = [];
+$createdDeposits = [];
+
+$depositBankName      = $config['qbo']['stripe_deposit_bank'] ?? 'TRINITY 2000 CHECKING';
+$weeklyIncomeName     = $config['qbo']['stripe_income_account'] ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
+$stripeFeeAccountName = $config['qbo']['stripe_fee_account'] ?? 'OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES';
+
+try {
+    $bankAccount = $qbo->getAccountByName($depositBankName, true);
     if (!$bankAccount) {
-        $errors[] = "Could not find deposit bank account in QBO: {$depositBankName}";
+        $errors[] = "Could not find bank account in QBO: {$depositBankName}";
     }
 
-    // Income account – match by FullyQualifiedName
-    $incomeAccount = $qbo->getAccountByName($incomeAccountName, true);
+    $incomeAccount = $qbo->getAccountByName($weeklyIncomeName, true);
     if (!$incomeAccount) {
-        $errors[] = "Could not find income account in QBO: {$incomeAccountName}";
+        $errors[] = "Could not find income account in QBO: {$weeklyIncomeName}";
     }
 
-    // Fee account – match by FullyQualifiedName
-    $feeAccount = $qbo->getAccountByName($feeAccountName, true);
+    $feeAccount = $qbo->getAccountByName($stripeFeeAccountName, true);
     if (!$feeAccount) {
-        $errors[] = "Could not find fee account in QBO: {$feeAccountName}";
+        $errors[] = "Could not find Stripe fee account in QBO: {$stripeFeeAccountName}";
     }
 } catch (Throwable $e) {
     $errors[] = 'Error looking up QBO accounts: ' . $e->getMessage();
 }
 
-// Load fund mappings (fund → location / class)
-$fundMappings = [];
-try {
-    $stmt = $pdo->query('SELECT * FROM fund_mappings');
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $fundId = (string)($row['pco_fund_id'] ?? '');
-        if ($fundId === '') {
-            continue;
-        }
-        $fundMappings[$fundId] = $row;
-    }
-} catch (Throwable $e) {
-    $errors[] = 'Error loading fund mappings: ' . $e->getMessage();
-}
+// --- Group funds by Location (one Deposit per Location) ----------------------
 
-// If we already have fatal-ish config errors, bail before PCO calls
-if (!empty($errors) && (empty($bankAccount) || empty($incomeAccount) || empty($feeAccount))) {
-    $status  = 'error';
-    $summary = 'Stripe sync configuration error.';
-    $details = implode("\n", $errors);
+$locationGroups = [];
 
-    $logger->finish($logId, $status, $summary, $details);
-    send_sync_email_if_needed($pdo, $config, 'Stripe', $status, $summary, $details);
+/** @var array $row */
+foreach ($preview['funds'] as $row) {
+    $locName = trim((string)($row['qbo_location_name'] ?? ''));
+    $locKey  = $locName !== '' ? $locName : '__NO_LOCATION__';
 
-    ?>
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>PCO → QBO Stripe Sync</title>
-        <style>
-            body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-            .error { padding: 0.75rem 1rem; background: #fee; border: 1px solid #f99; margin-bottom: 1rem; }
-        </style>
-    </head>
-    <body>
-    <h1>PCO → QBO Stripe Sync</h1>
-    <div class="error">
-        <strong>Stripe sync could not start due to configuration errors:</strong>
-        <ul>
-            <?php foreach ($errors as $err): ?>
-                <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
-            <?php endforeach; ?>
-        </ul>
-    </div>
-    <p><a href="index.php">&larr; Back to dashboard</a></p>
-    </body>
-    </html>
-    <?php
-    exit;
-}
-
-// ---------------------------------------------------------------------------
-// Fetch Stripe donations and build QBO deposits
-// ---------------------------------------------------------------------------
-
-$windowEnd = $nowUtc;
-
-try {
-    $donations = get_stripe_donations($pcoConfig, $sinceUtc, $windowEnd);
-} catch (Throwable $e) {
-    $errors[]   = 'Error fetching Stripe donations from PCO: ' . $e->getMessage();
-    $donations  = [];
-}
-
-$totalDonations = count($donations);
-
-// Group donations by (date, location)
-$groups = [];  // key = "Y-m-d|locationKey"
-
-foreach ($donations as $donation) {
-    /** @var DateTimeImmutable $completedAt */
-    $completedAt = $donation['completed_at'];
-    $dateStr     = $completedAt->format('Y-m-d');
-    $designations = $donation['designations'] ?? [];
-
-    foreach ($designations as $des) {
-        $fundId       = (string)($des['fund_id'] ?? '');
-        $amountCents  = (int)($des['amount_cents'] ?? 0);
-        $feeCents     = (int)($des['fee_cents'] ?? 0);
-
-        if ($fundId === '' || $amountCents === 0) {
-            continue;
-        }
-
-        $mapping   = $fundMappings[$fundId] ?? [];
-        $locName   = trim((string)($mapping['qbo_location_name'] ?? ''));
-        $className = trim((string)($mapping['qbo_class_name'] ?? ''));
-
-        $fundName = (string)(
-            $mapping['pco_fund_name']
-            ?? $mapping['fund_name']
-            ?? ('Fund ' . $fundId)
-        );
-
-        $locKey = $locName !== '' ? $locName : '__NO_LOCATION__';
-        $groupKey = $dateStr . '|' . $locKey;
-
-        if (!isset($groups[$groupKey])) {
-            $groups[$groupKey] = [
-                'date'            => $dateStr,
-                'location_name'   => $locName,
-                'funds'           => [],
-                'total_gross_cents' => 0,
-                'total_fee_cents'   => 0,
-                'donation_ids'    => [],
-            ];
-        }
-
-        if (!isset($groups[$groupKey]['funds'][$fundId])) {
-            $groups[$groupKey]['funds'][$fundId] = [
-                'pco_fund_id'    => $fundId,
-                'pco_fund_name'  => $fundName,
-                'qbo_class_name' => $className,
-                'gross_cents'    => 0,
-                'fee_cents'      => 0,
-            ];
-        }
-
-        $groups[$groupKey]['funds'][$fundId]['gross_cents'] += $amountCents;
-        $groups[$groupKey]['funds'][$fundId]['fee_cents']   += $feeCents;
-        $groups[$groupKey]['total_gross_cents']             += $amountCents;
-        $groups[$groupKey]['total_fee_cents']               += $feeCents;
-
-        $groups[$groupKey]['donation_ids'][] = $donation['id'];
-    }
-}
-
-// Cache for QBO Departments (Locations)
-$deptCache = [];
-
-// Create deposits per group
-foreach ($groups as $groupKey => $group) {
-    $dateStr   = $group['date'];
-    $locName   = $group['location_name'];
-    $funds     = $group['funds'];
-
-    if (empty($funds)) {
-        continue;
+    if (!isset($locationGroups[$locKey])) {
+        $locationGroups[$locKey] = [
+            'location_name' => $locName,   // '' means "no location"
+            'funds'         => [],
+            'total_gross'   => 0.0,
+            'total_fee'     => 0.0,
+            'total_net'     => 0.0,
+        ];
     }
 
-    // Look up QBO Department (Location) if mapped
-    $deptRef = null;
-    if ($locName !== '') {
-        if (!array_key_exists($locName, $deptCache)) {
+    $locationGroups[$locKey]['funds'][]      = $row;
+    $locationGroups[$locKey]['total_gross'] += (float)$row['gross'];
+    $locationGroups[$locKey]['total_fee']   += (float)$row['fee'];
+    $locationGroups[$locKey]['total_net']   += (float)$row['net'];
+}
+
+// --- Build and send one Deposit per Location --------------------------------
+
+if (empty($errors)) {
+    foreach ($locationGroups as $locKey => $group) {
+        $locName = $group['location_name'];
+
+        // Look up QBO Department (Location) if one is mapped
+        $deptRef = null;
+        if ($locName !== '') {
             try {
                 $deptObj = $qbo->getDepartmentByName($locName);
                 if (!$deptObj) {
-                    $errors[] = "Could not find QBO Location (Department) for '{$locName}' (Stripe sync).";
-                    $deptCache[$locName] = null;
-                } else {
-                    $deptCache[$locName] = [
-                        'value' => (string)$deptObj['Id'],
-                    ];
+                    $errors[] = "Could not find QBO Location (Department) for '{$locName}'.";
+                    continue;
                 }
+                $deptRef = [
+                    'value' => (string)$deptObj['Id'],
+                    'name'  => (string)($deptObj['Name'] ?? $locName),
+                ];
             } catch (Throwable $e) {
-                $errors[] = 'Error looking up QBO Location (Department) "' . $locName .
-                    '" in Stripe sync: ' . $e->getMessage();
-                $deptCache[$locName] = null;
-            }
-        }
-        $deptRef = $deptCache[$locName];
-    }
-
-    $lines = [];
-
-    foreach ($funds as $fundRow) {
-        $fundName  = $fundRow['pco_fund_name'];
-        $className = $fundRow['qbo_class_name'];
-
-        // Look up QBO Class per fund, if mapped
-        $classId = null;
-        if ($className !== '') {
-            try {
-                $classObj = $qbo->getClassByName($className);
-                if (!$classObj) {
-                    $errors[] = "Could not find QBO Class for fund '{$fundName}' in Stripe sync: {$className}";
-                } else {
-                    $classId = $classObj['Id'] ?? null;
-                }
-            } catch (Throwable $e) {
-                $errors[] = 'Error looking up QBO Class for fund ' . $fundName .
-                    ' in Stripe sync: ' . $e->getMessage();
+                $errors[] = 'Error looking up QBO Location (Department) for ' . $locName . ': ' . $e->getMessage();
+                continue;
             }
         }
 
-        $gross = round($fundRow['gross_cents'] / 100.0, 2);
-        $fees  = round($fundRow['fee_cents'] / 100.0, 2); // usually negative
+        $lines = [];
 
-        if ($gross == 0.0 && $fees == 0.0) {
-            continue;
-        }
+        foreach ($group['funds'] as $fundRow) {
+            $fundName  = $fundRow['pco_fund_name'];
+            $className = $fundRow['qbo_class_name'];
 
-        // Income line
-        if ($gross != 0.0) {
+            // Look up QBO Class per fund, if mapped
+            $classId = null;
+            if ($className) {
+                try {
+                    $classObj = $qbo->getClassByName($className);
+                    if (!$classObj) {
+                        $errors[] = "Could not find QBO Class for fund '{$fundName}' (expected: '{$className}').";
+                        continue 2; // skip this entire location
+                    }
+                    $classId = (string)$classObj['Id'];
+                } catch (Throwable $e) {
+                    $errors[] = 'Error looking up QBO Class for fund ' . $fundName . ': ' . $e->getMessage();
+                    continue 2; // skip this entire location
+                }
+            }
+
+            $gross = (float)$fundRow['gross'];
+            $fee   = (float)$fundRow['fee'];
+            $net   = (float)$fundRow['net'];
+
+            // Gross line (income)
             $line = [
-                'Amount'     => $gross,
+                'Amount'     => round($gross, 2),
                 'DetailType' => 'DepositLineDetail',
                 'DepositLineDetail' => [
                     'AccountRef' => [
                         'value' => (string)$incomeAccount['Id'],
-                        'name'  => $incomeAccount['Name'] ?? $incomeAccountName,
+                        'name'  => $incomeAccount['Name'] ?? $weeklyIncomeName,
                     ],
                 ],
-                'Description' => 'Stripe gross donations - ' . $fundName . ' (' . $dateStr . ')',
             ];
-
-            if ($classId) {
+            if ($classId !== null) {
                 $line['DepositLineDetail']['ClassRef'] = [
-                    'value' => (string)$classId,
+                    'value' => $classId,
+                    'name'  => $className,
                 ];
             }
-
             $lines[] = $line;
-        }
 
-        // Fee line (negative)
-        if ($fees != 0.0) {
-            $line = [
-                'Amount'     => $fees, // negative reduces deposit
-                'DetailType' => 'DepositLineDetail',
-                'DepositLineDetail' => [
-                    'AccountRef' => [
-                        'value' => (string)$feeAccount['Id'],
-                        'name'  => $feeAccount['Name'] ?? $feeAccountName,
+            // Fee line (negative)
+            if ($fee !== 0.0) {
+                $feeLine = [
+                    'Amount'     => round($fee, 2), // fee is negative in preview
+                    'DetailType' => 'DepositLineDetail',
+                    'DepositLineDetail' => [
+                        'AccountRef' => [
+                            'value' => (string)$feeAccount['Id'],
+                            'name'  => $feeAccount['Name'] ?? $stripeFeeAccountName,
+                        ],
                     ],
-                ],
-                'Description' => 'Stripe fees - ' . $fundName . ' (' . $dateStr . ')',
-            ];
-
-            if ($classId) {
-                $line['DepositLineDetail']['ClassRef'] = [
-                    'value' => (string)$classId,
                 ];
+                if ($classId !== null) {
+                    $feeLine['DepositLineDetail']['ClassRef'] = [
+                        'value' => $classId,
+                        'name'  => $className,
+                    ];
+                }
+                $lines[] = $feeLine;
             }
-
-            $lines[] = $line;
         }
-    }
 
-    if (empty($lines)) {
-        $errors[] = "No lines built for Stripe group {$groupKey}, skipping deposit.";
-        continue;
-    }
+        if (empty($lines)) {
+            continue;
+        }
 
-    $totalGross = $group['total_gross_cents'] / 100.0;
-    $totalFees  = $group['total_fee_cents'] / 100.0;
-    $net        = $totalGross + $totalFees;
-
-    $uniqueDonationIds = array_unique($group['donation_ids']);
-
-    $memoParts = [
-        'Stripe donations ' . $dateStr,
-        'Donations: ' . count($uniqueDonationIds),
-        'Gross: ' . number_format($totalGross, 2),
-        'Fees: ' . number_format($totalFees, 2),
-        'Net: ' . number_format($net, 2),
-    ];
-    if ($locName !== '') {
-        $memoParts[] = 'Location: ' . $locName;
-    }
-
-    $deposit = [
-        'TxnDate' => $dateStr,
-        'PrivateNote' => implode(' | ', $memoParts),
-        'DepositToAccountRef' => [
-            'value' => (string)$bankAccount['Id'],
-            'name'  => $bankAccount['Name'] ?? $depositBankName,
-        ],
-        'Line' => $lines,
-    ];
-
-    if ($deptRef !== null) {
-        $deposit['DepartmentRef'] = $deptRef;
-    }
-
-    try {
-        $resp = $qbo->createDeposit($deposit);
-        $dep  = $resp['Deposit'] ?? $resp;
-
-        $createdDeposits[] = [
-            'date'          => $dateStr,
-            'location_name' => $locName,
-            'total_gross'   => $totalGross,
-            'total_fees'    => $totalFees,
-            'deposit'       => $dep,
+        // Build Deposit payload according to QBO spec
+        $deposit = [
+            'TxnDate' => $nowUtc->format('Y-m-d'),
+            'PrivateNote' => 'PCO Stripe sync: completed_at ' .
+                $preview['since']->format('Y-m-d H:i:s') . ' to ' .
+                $preview['until']->format('Y-m-d H:i:s') .
+                ($locName ? (' | Location: ' . $locName) : ''),
+            'DepositToAccountRef' => [
+                'value' => (string)$bankAccount['Id'],
+                'name'  => $bankAccount['Name'] ?? $depositBankName,
+            ],
+            'Line' => $lines,
         ];
-    } catch (Throwable $e) {
-        $errors[] = 'Error creating QBO Deposit for Stripe ' . $groupKey . ': ' . $e->getMessage();
+
+        // One DepartmentRef (Location) per Deposit, per QBO rules
+        if ($deptRef !== null) {
+            $deposit['DepartmentRef'] = $deptRef;
+        }
+
+        // --- Idempotency: skip if we've already created an identical Stripe deposit
+        $fingerprint = build_stripe_deposit_fingerprint($deposit, (string)$locKey);
+        if (has_synced_stripe_deposit($pdo, $fingerprint)) {
+            // Record that we saw this deposit but skipped it to avoid duplicates
+            $createdDeposits[] = [
+                'location_name' => $locName,
+                'total_gross'   => $group['total_gross'],
+                'total_fee'     => $group['total_fee'],
+                'total_net'     => $group['total_net'],
+                'deposit'       => null,
+                'skipped'       => true,
+            ];
+            continue;
+        }
+
+        try {
+            $resp = $qbo->createDeposit($deposit);
+            $dep  = $resp['Deposit'] ?? null;
+
+            // Mark this deposit as synced so re-runs don't double-book it
+            mark_synced_stripe_deposit($pdo, $fingerprint);
+
+            $createdDeposits[] = [
+                'location_name' => $locName,
+                'total_gross'   => $group['total_gross'],
+                'total_fee'     => $group['total_fee'],
+                'total_net'     => $group['total_net'],
+                'deposit'       => $dep,
+                'skipped'       => false,
+            ];
+        } catch (Throwable $e) {
+            $errors[] = 'Error creating QBO Deposit for Location ' . ($locName ?: '(no location)') . ': ' . $e->getMessage();
+        }
     }
 }
 
-// Move the Stripe sync window forward
-set_setting($pdo, 'last_completed_at', $windowEnd->format(DateTimeInterface::ATOM));
-
-// Determine log status
-if (empty($errors)) {
-    $status = 'success';
-} elseif (!empty($createdDeposits)) {
-    $status = 'partial';
-} else {
-    $status = 'error';
-}
-
-$summary = sprintf(
-    'Stripe: processed %d donations; created %d deposits.',
-    (int)$totalDonations,
-    count($createdDeposits)
-);
-$details = empty($errors) ? null : implode("\n", $errors);
-
-$logger->finish($logId, $status, $summary, $details);
-send_sync_email_if_needed($pdo, $config, 'Stripe', $status, $summary, $details);
-
-// Send email notification on error or partial status
-$notificationEmail = get_setting($pdo, 'notification_email');
-if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
-    $from   = $config['mail']['from'] ?? null;
-    $mailer = new Mailer($from);
-
-    $subject = '[PCO→QBO] Stripe sync ' . strtoupper($status);
-    $bodyLines = [
-        'Stripe sync run on ' . $nowUtc->format('Y-m-d H:i:s T'),
-        '',
-        'Status: ' . $status,
-        $summary,
-    ];
-    if (!empty($details)) {
-        $bodyLines[] = '';
-        $bodyLines[] = 'Details:';
-        $bodyLines[] = $details;
-    }
-
-    $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
+// Only move the sync window forward if everything succeeded
+if (empty($errors) && !empty($createdDeposits)) {
+    set_setting($pdo, 'last_completed_at', $preview['until']->format(DateTimeInterface::ATOM));
 }
 
 ?>
@@ -756,19 +450,19 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>PCO → QBO Stripe Sync</title>
+    <title>PCO &rarr; QBO Stripe Sync Result</title>
     <style>
         body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; }
-        .muted { font-size: 0.9rem; color: #666; }
-        .ok    { padding: 0.75rem 1rem; background: #e6ffed; border: 1px solid #7dd47d; margin-bottom: 1rem; }
-        .error { padding: 0.75rem 1rem; background: #fee; border: 1px solid #f99; margin-bottom: 1rem; }
-        table { border-collapse: collapse; margin-top: 1rem; }
-        th, td { border: 1px solid #ddd; padding: 0.35rem 0.5rem; text-align: left; font-size: 0.9rem; }
-        th { background: #f7f7f7; }
+        .ok { padding: 0.6rem 0.8rem; background: #e6ffed; border: 1px solid #b7eb8f; margin-bottom: 1rem; }
+        .error { padding: 0.6rem 0.8rem; background: #ffecec; border: 1px solid #ffaeae; margin-bottom: 1rem; }
+        table { border-collapse: collapse; width: 100%; max-width: 900px; }
+        th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; font-size: 0.9rem; text-align: left; }
+        th { background: #f5f5f5; }
+        .muted { font-size: 0.85rem; color: #666; }
     </style>
 </head>
 <body>
-<h1>PCO → QBO Stripe Sync</h1>
+<h1>PCO &rarr; QBO Stripe Sync Result</h1>
 
 <?php if (!empty($errors)): ?>
     <div class="error">
@@ -778,26 +472,42 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
                 <li><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></li>
             <?php endforeach; ?>
         </ul>
+        <?php if (!empty($createdDeposits)): ?>
+            <p class="muted">
+                Some deposits may have been created in QuickBooks before the errors occurred.
+                Review QBO and adjust the <code>last_completed_at</code> setting if you need to rerun this window.
+            </p>
+        <?php endif; ?>
     </div>
 <?php else: ?>
-    <div class="ok">
-        <strong>Stripe sync completed without errors.</strong>
-    </div>
+    <?php if (!empty($createdDeposits)): ?>
+        <div class="ok">
+            <strong><?= count($createdDeposits) ?> deposit(s) created or already present in QuickBooks.</strong>
+        </div>
+    <?php else: ?>
+        <div class="ok">
+            <strong>No deposits were created.</strong>
+        </div>
+    <?php endif; ?>
 <?php endif; ?>
 
-<p>Total Stripe donations processed (within window): <strong><?= (int)$totalDonations ?></strong></p>
-<p>Deposits created in QBO: <strong><?= count($createdDeposits) ?></strong></p>
+<h2>Window used</h2>
+<p class="muted">
+    Completed_at from
+    <strong><?= htmlspecialchars($preview['since']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></strong>
+    to
+    <strong><?= htmlspecialchars($preview['until']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></strong>
+</p>
 
-<h2>Deposits created</h2>
-<?php if (empty($createdDeposits)): ?>
-    <p>No Stripe donations in this window produced deposits.</p>
-<?php else: ?>
+<?php if (!empty($createdDeposits)): ?>
+    <h2>Deposits by Location</h2>
     <table>
         <thead>
         <tr>
-            <th>Date</th>
             <th>Location</th>
-            <th>QBO Deposit (Id/DocNumber)</th>
+            <th>QBO Deposit Id</th>
+            <th>TxnDate</th>
+            <th>QBO Total</th>
             <th>Gross</th>
             <th>Fees</th>
             <th>Net</th>
@@ -806,30 +516,28 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
         <tbody>
         <?php foreach ($createdDeposits as $cd): ?>
             <?php
-            $dep = $cd['deposit'] ?? [];
-            $gross = (float)$cd['total_gross'];
-            $fees  = (float)$cd['total_fees'];
-            $net   = $gross + $fees;
+                $dep     = $cd['deposit'] ?? [];
+                $skipped = $cd['skipped'] ?? false;
             ?>
             <tr>
-                <td><?= htmlspecialchars((string)$cd['date'], ENT_QUOTES, 'UTF-8') ?></td>
                 <td><?= htmlspecialchars($cd['location_name'] ?: '(no location)', ENT_QUOTES, 'UTF-8') ?></td>
-                <td><?= htmlspecialchars((string)($dep['DocNumber'] ?? $dep['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
-                <td>$<?= number_format($gross, 2) ?></td>
-                <td>$<?= number_format($fees, 2) ?></td>
-                <td>$<?= number_format($net, 2) ?></td>
+                <td>
+                    <?php if ($skipped): ?>
+                        <span class="muted">skipped (already synced)</span>
+                    <?php else: ?>
+                        <?= htmlspecialchars((string)($dep['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?>
+                    <?php endif; ?>
+                </td>
+                <td><?= $skipped ? '' : htmlspecialchars((string)($dep['TxnDate'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                <td><?= $skipped ? '' : ('$' . htmlspecialchars((string)($dep['TotalAmt'] ?? ''), ENT_QUOTES, 'UTF-8')) ?></td>
+                <td>$<?= number_format($cd['total_gross'], 2) ?></td>
+                <td>$<?= number_format($cd['total_fee'], 2) ?></td>
+                <td>$<?= number_format($cd['total_net'], 2) ?></td>
             </tr>
         <?php endforeach; ?>
         </tbody>
     </table>
 <?php endif; ?>
-
-<h2>Window used</h2>
-<p class="muted">
-    From <strong><?= htmlspecialchars($sinceUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
-    to <strong><?= htmlspecialchars($windowEnd->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') ?></strong>
-    (based on <code>Donation.completed_at</code>).
-</p>
 
 <p style="margin-top:1.5rem;"><a href="index.php">&larr; Back to dashboard</a></p>
 
