@@ -358,6 +358,14 @@ try {
         .footnote {
             margin-top: 1.4rem;
         }
+        .footer {
+            margin-top: 1.4rem;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { color: #dff1ff; }
         .centered {
             display: flex;
             justify-content: center;
@@ -490,6 +498,9 @@ try {
         <p class="small footnote">
             This dashboard helps trigger manual PCO Stripe payout syncs, review logs, adjust fund mapping, and keep notifications flowing.
         </p>
+        <div class="footer">
+            &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+        </div>
     </div>
 </div>
 </body>

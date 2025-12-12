@@ -159,6 +159,14 @@ try {
         }
         .muted { color: var(--muted); font-size: 0.95rem; }
         .footnote { margin-top: 1.2rem; }
+        .footer {
+            margin-top: 1.4rem;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { color: #dff1ff; }
         a { color: var(--accent); }
     </style>
 </head>
@@ -226,6 +234,9 @@ try {
     <p class="muted footnote">
         Use these Fund IDs to map to your QBO Classes &amp; Locations in the fund mapping screen before running syncs.
     </p>
+    <div class="footer">
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+    </div>
 </div>
 </body>
 </html>

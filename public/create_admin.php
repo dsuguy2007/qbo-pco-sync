@@ -241,6 +241,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .nav-link:hover {
             color: #dff1ff;
         }
+        .footer {
+            margin-top: 1.4rem;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { color: #dff1ff; }
         @media (max-width: 720px) {
             .hero { padding: 1.2rem 1.1rem; }
             .btn { width: 100%; justify-content: center; }
@@ -304,6 +312,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <button type="submit" class="btn">Create user</button>
         </form>
         <a class="nav-link" href="index.php">&larr; Back to dashboard</a>
+    </div>
+    <div class="footer">
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
     </div>
 </div>
 </body>

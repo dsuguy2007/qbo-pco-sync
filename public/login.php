@@ -168,6 +168,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
             text-decoration: none;
         }
         .small-link:hover { color: #dff1ff; }
+        .footer {
+            margin-top: 1rem;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { color: #dff1ff; }
     </style>
 </head>
 <body>
@@ -201,6 +209,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
     <?php if (!$isFirstRun): ?>
         <a class="small-link" href="logout.php">Need to switch accounts? Log out.</a>
     <?php endif; ?>
+    <div class="footer">
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+    </div>
 </div>
 </body>
 </html>

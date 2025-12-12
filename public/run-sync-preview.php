@@ -251,6 +251,14 @@ $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
         .footnote {
             margin-top: 1.2rem;
         }
+        .footer {
+            margin-top: 1.4rem;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { color: #dff1ff; }
         @media (max-width: 720px) {
             .hero { padding: 1.2rem 1.1rem; }
             .section-header { align-items: flex-start; }
@@ -425,6 +433,9 @@ $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
         Once this preview matches your Stripe payout report for the same period, these per-fund gross and fee totals will flow into a QuickBooks Online deposit:
         one income line and one fee line per fund into your configured bank account, using the mapped Class and Location.
     </p>
+    <div class="footer">
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+    </div>
 </div>
 </body>
 </html>

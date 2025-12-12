@@ -203,6 +203,14 @@ function renderLayout(string $title, string $heroTitle, string $lede, string $co
             tr:hover td { background: rgba(46,168,255,0.03); }
             .muted { color: var(--muted); font-size: 0.95rem; line-height: 1.5; }
             .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
+            .footer {
+                margin-top: 1.4rem;
+                text-align: center;
+                color: var(--muted);
+                font-size: 0.9rem;
+            }
+            .footer a { color: var(--accent); text-decoration: none; }
+            .footer a:hover { color: #dff1ff; }
             @media (max-width: 720px) {
                 .hero { padding: 1.2rem 1.1rem; }
                 .section-header { align-items: flex-start; }
@@ -1025,6 +1033,10 @@ ob_start();
 <div class="actions">
     <a class="btn secondary" href="run-sync-preview.php">View online sync preview</a>
     <a class="btn secondary" href="settings.php">Adjust settings</a>
+</div>
+
+<div class="footer">
+    &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
 </div>
 
 <?php

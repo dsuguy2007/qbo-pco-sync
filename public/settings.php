@@ -344,6 +344,14 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
             cursor: pointer;
             font-size: 1rem;
         }
+        .footer {
+            margin-top: 1.4rem;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { color: #dff1ff; }
         @media (max-width: 720px) {
             .hero { padding: 1.2rem 1.1rem; }
             .section-header { align-items: flex-start; }
@@ -535,6 +543,9 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
             <button type="submit" class="btn">Save settings</button>
         </div>
     </form>
+    <div class="footer">
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+    </div>
 </div>
 </body>
 </html>

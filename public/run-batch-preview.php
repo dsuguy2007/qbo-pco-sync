@@ -224,14 +224,22 @@ function renderLayout(string $title, string $heroTitle, string $lede, string $co
                 color: var(--muted);
                 font-size: 0.95rem;
             }
-            .footnote {
-                margin-top: 1.2rem;
-            }
-            @media (max-width: 720px) {
-                .hero { padding: 1.2rem 1.1rem; }
-                .section-header { align-items: flex-start; }
-                .btn.secondary { width: 100%; justify-content: center; }
-                .filters { width: 100%; justify-content: space-between; }
+        .footnote {
+            margin-top: 1.2rem;
+        }
+        .footer {
+            margin-top: 1.4rem;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { color: #dff1ff; }
+        @media (max-width: 720px) {
+            .hero { padding: 1.2rem 1.1rem; }
+            .section-header { align-items: flex-start; }
+            .btn.secondary { width: 100%; justify-content: center; }
+            .filters { width: 100%; justify-content: space-between; }
             }
         </style>
     </head>
@@ -647,6 +655,9 @@ ob_start();
     This preview totals committed batch donations (cash/check) by fund, using your current Class and Location mappings from the database.
     Use it to reconcile before running the batch sync to QuickBooks.
 </p>
+<div class="footer">
+    &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+</div>
 
 <?php
 $content = ob_get_clean();
