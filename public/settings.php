@@ -81,6 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Stripe payout sync (online / Stripe donations)
         $depositBankName = trim((string)($_POST['deposit_bank_account_name'] ?? ''));
         $incomeName      = trim((string)($_POST['income_account_name'] ?? ''));
+        $refundName      = trim((string)($_POST['stripe_refund_account_name'] ?? ''));
         $feeName         = trim((string)($_POST['stripe_fee_account_name'] ?? ''));
 
         if ($depositBankName !== '') {
@@ -88,6 +89,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         if ($incomeName !== '') {
             set_setting($pdo, 'income_account_name', $incomeName);
+        }
+        if ($refundName !== '') {
+            set_setting($pdo, 'stripe_refund_account_name', $refundName);
         }
         if ($feeName !== '') {
             set_setting($pdo, 'stripe_fee_account_name', $feeName);
@@ -152,6 +156,8 @@ $depositBankName = get_setting($pdo, 'deposit_bank_account_name')
 
 $incomeAccountName = get_setting($pdo, 'income_account_name')
     ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
+
+$stripeRefundAccountName = get_setting($pdo, 'stripe_refund_account_name') ?? '';
 
 $stripeFeeAccountName = get_setting($pdo, 'stripe_fee_account_name')
     ?? 'OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES';
@@ -518,6 +524,19 @@ $lastBatchDisplay      = format_display_time($lastBatchCompletedAt, $displayTime
                 >
                 <div class="hint">
                     Used for gross donation lines (for example: <code>OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES</code>).
+                </div>
+            </div>
+
+            <div class="field">
+                <label for="stripe_refund_account_name">Refund income account (QBO name)</label>
+                <input
+                    type="text"
+                    id="stripe_refund_account_name"
+                    name="stripe_refund_account_name"
+                    value="<?php echo htmlspecialchars($stripeRefundAccountName, ENT_QUOTES, 'UTF-8'); ?>"
+                >
+                <div class="hint">
+                    If blank, refunds will post back to the main income account.
                 </div>
             </div>
 

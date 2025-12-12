@@ -359,4 +359,11 @@ class QboClient
         $this->paymentMethodCache[$name] = $method;
         return $method;
     }
+
+    public function createPurchase(array $purchase): array
+    {
+        $path = '/purchase';
+        $query = ['minorversion' => 65];
+        return $this->apiRequest('POST', $path, $query, $purchase);
+    }
 }

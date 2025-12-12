@@ -276,6 +276,118 @@ class SyncService
     }
 
     /**
+     * Build a list of refunded Stripe donations updated within the window.
+     */
+    public function buildRefundPreview(DateTimeImmutable $sinceUtc, ?DateTimeImmutable $untilUtc = null): array
+    {
+        $fundMappings = $this->loadFundMappings();
+        $nowUtc       = $untilUtc ?? new DateTimeImmutable('now', new DateTimeZone('UTC'));
+
+        $resp = $this->pco->listDonations([
+            'per_page' => 100,
+            'order'    => '-updated_at',
+            'include'  => 'designations',
+        ]);
+
+        $includedByKey = [];
+        if (!empty($resp['included']) && is_array($resp['included'])) {
+            foreach ($resp['included'] as $inc) {
+                $type = $inc['type'] ?? '';
+                $id   = $inc['id']   ?? '';
+                if ($type && $id) {
+                    $includedByKey["{$type}:{$id}"] = $inc;
+                }
+            }
+        }
+
+        $refunds = [];
+        $skippedUnmapped = [];
+        $totalRefundCents = 0;
+
+        foreach ($resp['data'] ?? [] as $donation) {
+            $id    = (string)($donation['id'] ?? '');
+            $attrs = $donation['attributes'] ?? [];
+            $rels  = $donation['relationships'] ?? [];
+
+            $updatedAtStr = $attrs['updated_at'] ?? null;
+            $completedAtStr = $attrs['completed_at'] ?? null;
+            if (!$updatedAtStr || !$completedAtStr) {
+                continue;
+            }
+
+            try {
+                $updatedAt = new DateTimeImmutable($updatedAtStr);
+            } catch (Throwable $e) {
+                continue;
+            }
+
+            if ($updatedAt < $sinceUtc || $updatedAt > $nowUtc) {
+                continue;
+            }
+
+            $refunded = (bool)($attrs['refunded'] ?? false);
+            $paymentStatus = strtolower((string)($attrs['payment_status'] ?? ''));
+            if (!$refunded || $paymentStatus !== 'succeeded') {
+                continue;
+            }
+
+            $designationRefs = $rels['designations']['data'] ?? [];
+            if (empty($designationRefs) || !is_array($designationRefs)) {
+                $skippedUnmapped[] = ['donation_id' => $id, 'reason' => 'No designations for refund'];
+                continue;
+            }
+
+            $lines = [];
+            foreach ($designationRefs as $desRef) {
+                $dtype = $desRef['type'] ?? '';
+                $did   = $desRef['id']   ?? '';
+                $key   = "{$dtype}:{$did}";
+                if (!isset($includedByKey[$key])) {
+                    continue;
+                }
+                $des      = $includedByKey[$key];
+                $desAttrs = $des['attributes'] ?? [];
+                $desAmt   = (int)($desAttrs['amount_cents'] ?? 0);
+                $fundId   = $des['relationships']['fund']['data']['id'] ?? null;
+                if ($fundId === null || $desAmt === 0) {
+                    continue;
+                }
+                $fundKey = (string)$fundId;
+                $map     = $fundMappings[$fundKey] ?? null;
+                if (!$map) {
+                    $skippedUnmapped[] = ['donation_id' => $id, 'fund_id' => $fundKey, 'reason' => 'Fund not mapped'];
+                    continue;
+                }
+                $lines[] = [
+                    'fund_id'          => $fundKey,
+                    'fund_name'        => $map['pco_fund_name'],
+                    'qbo_class_name'   => $map['qbo_class_name'],
+                    'qbo_location_name'=> $map['qbo_location_name'],
+                    'amount'           => $desAmt / 100.0,
+                ];
+                $totalRefundCents += $desAmt;
+            }
+
+            if (!empty($lines)) {
+                $refunds[] = [
+                    'donation_id'   => $id,
+                    'updated_at'    => $updatedAt,
+                    'payment_method'=> strtolower((string)($attrs['payment_method'] ?? '')),
+                    'lines'         => $lines,
+                ];
+            }
+        }
+
+        return [
+            'since'            => $sinceUtc,
+            'until'            => $nowUtc,
+            'refunds'          => $refunds,
+            'total_refund'     => $totalRefundCents / 100.0,
+            'skipped_unmapped' => $skippedUnmapped,
+        ];
+    }
+
+    /**
      * Load fund mappings from DB keyed by pco_fund_id.
      */
     private function loadFundMappings(): array

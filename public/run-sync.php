@@ -164,6 +164,30 @@ function mark_synced_stripe_deposit(PDO $pdo, string $fingerprint): void
     ]);
 }
 
+function has_synced_stripe_refund(PDO $pdo, string $donationId): bool
+{
+    $stmt = $pdo->prepare('SELECT 1 FROM synced_deposits WHERE type = :type AND fingerprint = :fp LIMIT 1');
+    $stmt->execute([
+        ':type' => 'stripe_refund',
+        ':fp'   => $donationId,
+    ]);
+    return (bool)$stmt->fetchColumn();
+}
+
+function mark_synced_stripe_refund(PDO $pdo, string $donationId): void
+{
+    $stmt = $pdo->prepare(
+        'INSERT IGNORE INTO synced_deposits (type, fingerprint, created_at)
+         VALUES (:type, :fp, :created_at)'
+    );
+
+    $stmt->execute([
+        ':type'       => 'stripe_refund',
+        ':fp'         => $donationId,
+        ':created_at' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s'),
+    ]);
+}
+
 function finish_log(?SyncLogger $logger, ?int $logId, string $status, string $summary, ?string $details = null): void
 {
     if ($logger === null || $logId === null) {
@@ -635,6 +659,7 @@ if ($sinceUtc >= $nowUtc) {
 
 try {
     $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
+    $refundPreview = $service->buildRefundPreview($sinceUtc, $nowUtc);
 } catch (Throwable $e) {
     finish_log(
         $logger,
@@ -650,13 +675,13 @@ try {
 }
 
 // If there are no funds to deposit, simply move the window forward.
-if (empty($preview['funds'])) {
+if (empty($preview['funds']) && empty($refundPreview['refunds'])) {
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
     finish_log(
         $logger,
         $logId,
         'success',
-        'No eligible Stripe donations; window advanced.',
+        'No eligible Stripe donations or refunds; window advanced.',
         null
     );
 
@@ -664,7 +689,7 @@ if (empty($preview['funds'])) {
     ?>
     <div class="flash success">
         <span class="tag">Info</span>
-        <div>No eligible Stripe donations were found to sync in this window.</div>
+        <div>No eligible Stripe donations/refunds were found to sync in this window.</div>
     </div>
     <div class="card">
         <p class="muted">
@@ -683,10 +708,12 @@ if (empty($preview['funds'])) {
 
 $errors          = [];
 $createdDeposits = [];
+$createdRefunds  = [];
 
 $depositBankName      = $config['qbo']['stripe_deposit_bank'] ?? 'TRINITY 2000 CHECKING';
 $weeklyIncomeName     = $config['qbo']['stripe_income_account'] ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
 $stripeFeeAccountName = $config['qbo']['stripe_fee_account'] ?? 'OPERATING EXPENSES:MINISTRY EXPENSES:PROCESSING FEES';
+$stripeRefundName     = get_setting($pdo, 'stripe_refund_account_name') ?? '';
 
 try {
     $bankAccount = $qbo->getAccountByName($depositBankName, true);
@@ -703,6 +730,12 @@ try {
     if (!$feeAccount) {
         $errors[] = "Could not find Stripe fee account in QBO: {$stripeFeeAccountName}";
     }
+
+    $refundAccount = $stripeRefundName !== '' ? $qbo->getAccountByName($stripeRefundName, true) : null;
+    if ($stripeRefundName !== '' && !$refundAccount) {
+        $errors[] = "Could not find refund income account in QBO: {$stripeRefundName}";
+    }
+    $refundAccountFallback = $incomeAccount;
 } catch (Throwable $e) {
     $errors[] = 'Error looking up QBO accounts: ' . $e->getMessage();
 }
@@ -890,8 +923,92 @@ if (empty($errors)) {
     }
 }
 
-if (empty($errors) && !empty($createdDeposits)) {
+if (empty($errors) && (!empty($createdDeposits) || !empty($createdRefunds))) {
     set_setting($pdo, 'last_completed_at', $preview['until']->format(DateTimeInterface::ATOM));
+}
+
+// --- Process refunds as Expenses --------------------------------------------
+
+if (empty($errors) && !empty($refundPreview['refunds'])) {
+    foreach ($refundPreview['refunds'] as $refund) {
+        $donationId = $refund['donation_id'] ?? '';
+        if ($donationId === '') {
+            continue;
+        }
+        if (has_synced_stripe_refund($pdo, $donationId)) {
+            continue;
+        }
+
+        $lines = [];
+        foreach ($refund['lines'] as $line) {
+            $lineDetail = [
+                'Amount' => round((float)$line['amount'], 2),
+                'DetailType' => 'AccountBasedExpenseLineDetail',
+                'AccountBasedExpenseLineDetail' => [
+                    'AccountRef' => [
+                        'value' => (string)($refundAccount['Id'] ?? $refundAccountFallback['Id']),
+                        'name'  => ($refundAccount['Name'] ?? $stripeRefundName) ?: ($refundAccountFallback['Name'] ?? $weeklyIncomeName),
+                    ],
+                ],
+                'Description' => 'Refund for fund ' . ($line['fund_name'] ?? $line['fund_id']),
+            ];
+
+            if (!empty($line['qbo_class_name'])) {
+                try {
+                    $classObj = $qbo->getClassByName($line['qbo_class_name']);
+                    if ($classObj) {
+                        $lineDetail['AccountBasedExpenseLineDetail']['ClassRef'] = [
+                            'value' => (string)$classObj['Id'],
+                            'name'  => $classObj['Name'] ?? $line['qbo_class_name'],
+                        ];
+                    }
+                } catch (Throwable $e) {
+                    $errors[] = 'Refund class lookup failed for donation ' . $donationId . ': ' . $e->getMessage();
+                    continue 2;
+                }
+            }
+
+            if (!empty($line['qbo_location_name'])) {
+                try {
+                    $deptObj = $qbo->getDepartmentByName($line['qbo_location_name']);
+                    if ($deptObj) {
+                        $lineDetail['AccountBasedExpenseLineDetail']['DepartmentRef'] = [
+                            'value' => (string)$deptObj['Id'],
+                            'name'  => $deptObj['Name'] ?? $line['qbo_location_name'],
+                        ];
+                    }
+                } catch (Throwable $e) {
+                    $errors[] = 'Refund location lookup failed for donation ' . $donationId . ': ' . $e->getMessage();
+                    continue 2;
+                }
+            }
+
+            $lines[] = $lineDetail;
+        }
+
+        if (empty($lines)) {
+            continue;
+        }
+
+        $purchase = [
+            'TxnDate' => $nowUtc->format('Y-m-d'),
+            'PaymentType' => 'Cash',
+            'AccountRef' => [
+                'value' => (string)$bankAccount['Id'],
+                'name'  => $bankAccount['Name'] ?? $depositBankName,
+            ],
+            'PrivateNote' => 'Refund for donation ' . $donationId . ' (updated_at ' . ($refund['updated_at']->format('Y-m-d H:i:s') ?? '') . ')',
+            'Line' => $lines,
+        ];
+
+        try {
+            $resp = $qbo->createPurchase($purchase);
+            $createdRefunds[] = $resp['Purchase'] ?? $resp;
+            mark_synced_stripe_refund($pdo, $donationId);
+        } catch (Throwable $e) {
+            $errors[] = 'Error creating refund expense for donation ' . $donationId . ': ' . $e->getMessage();
+        }
+    }
 }
 
 // --- Render result -----------------------------------------------------------
@@ -1030,6 +1147,7 @@ $summaryData = [
     'ts'        => $nowUtc->format(DateTimeInterface::ATOM),
     'status'    => $status,
     'deposits'  => count($createdDeposits),
+    'refunds'   => count($createdRefunds),
     'window'    => [
         'since' => $preview['since']->format(DateTimeInterface::ATOM),
         'until' => $preview['until']->format(DateTimeInterface::ATOM),
