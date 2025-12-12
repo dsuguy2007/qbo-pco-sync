@@ -10,6 +10,15 @@ require_once __DIR__ . '/../src/SyncLogger.php';
 require_once __DIR__ . '/../src/Mailer.php'; 
 
 Auth::requireLogin();
+// DEBUG: prove we are in the correct run-sync.php
+$debugRoot = dirname(__DIR__); // /qbo-pco-sync
+$debugFile = $debugRoot . '/email-debug.log';
+
+file_put_contents(
+    $debugFile,
+    date('c') . " run-sync.php TOP reached\n",
+    FILE_APPEND
+);
 
 /**
  * Read a setting from the sync_settings table.
@@ -48,6 +57,68 @@ function set_setting(PDO $pdo, string $key, string $value): void
         ':value' => $value,
     ]);
 }
+
+function send_sync_email_if_needed(
+    PDO $pdo,
+    array $config,
+    string $syncLabel,
+    string $status,
+    string $summary,
+    ?string $details
+): void {
+    // Debug log for the helper itself
+    $root    = dirname(__DIR__); // /qbo-pco-sync
+    $logFile = $root . '/email-debug.log';
+
+    $notificationEmail = get_setting($pdo, 'notification_email');
+
+    $logLines = [];
+    $logLines[] = sprintf(
+        "[%s] send_sync_email_if_needed called",
+        date('c')
+    );
+    $logLines[] = '  syncLabel:          ' . $syncLabel;
+    $logLines[] = '  status:             ' . $status;
+    $logLines[] = '  notification_email: ' . ($notificationEmail ?? 'NULL');
+    $logLines[] = '';
+
+    @file_put_contents($logFile, implode("\n", $logLines) . "\n", FILE_APPEND);
+
+    // If no email configured or status is success, skip sending
+    if (!$notificationEmail || !in_array($status, ['error', 'partial'], true)) {
+        $skipLines = [];
+        $skipLines[] = sprintf(
+            "[%s] Skipping email send (either no email set or status not error/partial).",
+            date('c')
+        );
+        $skipLines[] = str_repeat('-', 60);
+        @file_put_contents($logFile, implode("\n", $skipLines) . "\n", FILE_APPEND);
+        return;
+    }
+
+    $from   = $config['mail']['from'] ?? null;
+    $mailer = new Mailer($from);
+
+    $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+
+    $subject = "[PCO→QBO] {$syncLabel} sync " . strtoupper($status);
+    $bodyLines = [
+        "{$syncLabel} sync run on " . $nowUtc->format('Y-m-d H:i:s T'),
+        '',
+        'Status: ' . $status,
+        $summary,
+    ];
+
+    if (!empty($details)) {
+        $bodyLines[] = '';
+        $bodyLines[] = 'Details:';
+        $bodyLines[] = $details;
+    }
+
+    $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
+}
+
+
 
 /**
  * Low-level helper to call the PCO API.
@@ -228,17 +299,19 @@ $logId  = $logger->start('stripe');
 
 $pcoConfig = $config['pco'] ?? [];
 if (empty($pcoConfig['app_id']) || empty($pcoConfig['secret'])) {
-    $logger->finish(
-        $logId,
-        'error',
-        'PCO credentials not configured.',
-        'Missing pco.app_id or pco.secret in config.php.'
-    );
+    $status  = 'error';
+    $summary = 'PCO credentials not configured.';
+    $details = 'Missing pco.app_id or pco.secret in config.php.';
+
+    $logger->finish($logId, $status, $summary, $details);
+    send_sync_email_if_needed($pdo, $config, 'Stripe', $status, $summary, $details);
+
     http_response_code(500);
     echo '<h1>PCO client error</h1>';
     echo '<p>PCO credentials are not configured. Please set pco.app_id and pco.secret in config.php.</p>';
     exit;
 }
+
 
 $errors          = [];
 $createdDeposits = [];
@@ -248,17 +321,19 @@ try {
     $qbo = new QboClient($pdo, $config);
 } catch (Throwable $e) {
     $errors[] = 'Error creating QBO client: ' . $e->getMessage();
-    $logger->finish(
-        $logId,
-        'error',
-        'Failed to create QBO client.',
-        $errors[0]
-    );
+    $status   = 'error';
+    $summary  = 'Failed to create QBO client.';
+    $details  = $errors[0];
+
+    $logger->finish($logId, $status, $summary, $details);
+    send_sync_email_if_needed($pdo, $config, 'Stripe', $status, $summary, $details);
+
     http_response_code(500);
     echo '<h1>QBO client error</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
     exit;
 }
+
 
 // ---------------------------------------------------------------------------
 // Determine sync window based on Donation.completed_at
@@ -357,8 +432,12 @@ try {
 
 // If we already have fatal-ish config errors, bail before PCO calls
 if (!empty($errors) && (empty($bankAccount) || empty($incomeAccount) || empty($feeAccount))) {
+    $status  = 'error';
+    $summary = 'Stripe sync configuration error.';
     $details = implode("\n", $errors);
-    $logger->finish($logId, 'error', 'Stripe sync configuration error.', $details);
+
+    $logger->finish($logId, $status, $summary, $details);
+    send_sync_email_if_needed($pdo, $config, 'Stripe', $status, $summary, $details);
 
     ?>
     <!DOCTYPE html>
@@ -648,6 +727,8 @@ $summary = sprintf(
 $details = empty($errors) ? null : implode("\n", $errors);
 
 $logger->finish($logId, $status, $summary, $details);
+send_sync_email_if_needed($pdo, $config, 'Stripe', $status, $summary, $details);
+
 // Send email notification on error or partial status
 $notificationEmail = get_setting($pdo, 'notification_email');
 if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {

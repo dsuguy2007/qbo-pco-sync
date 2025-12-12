@@ -49,6 +49,42 @@ function set_setting(PDO $pdo, string $key, string $value): void
     ]);
 }
 
+function send_sync_email_if_needed(
+    PDO $pdo,
+    array $config,
+    string $syncLabel,
+    string $status,
+    string $summary,
+    ?string $details
+): void {
+    $notificationEmail = get_setting($pdo, 'notification_email');
+    if (!$notificationEmail || !in_array($status, ['error', 'partial'], true)) {
+        return;
+    }
+
+    $from   = $config['mail']['from'] ?? null;
+    $mailer = new Mailer($from);
+
+    $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+
+    $subject = "[PCO→QBO] {$syncLabel} sync " . strtoupper($status);
+    $bodyLines = [
+        "{$syncLabel} sync run on " . $nowUtc->format('Y-m-d H:i:s T'),
+        '',
+        'Status: ' . $status,
+        $summary,
+    ];
+
+    if (!empty($details)) {
+        $bodyLines[] = '';
+        $bodyLines[] = 'Details:';
+        $bodyLines[] = $details;
+    }
+
+    $mailer->send($notificationEmail, $subject, implode("\n", $bodyLines));
+}
+
+
 /**
  * Low-level helper to call the PCO API.
  */
