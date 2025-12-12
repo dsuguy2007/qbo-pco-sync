@@ -67,7 +67,7 @@ try {
             $qboConnected  = true;
             $qboStatusText = 'Connected to QuickBooks (realm ' . htmlspecialchars($realmId, ENT_QUOTES, 'UTF-8') . ').';
         } else {
-            // We have a row but token is expired or can’t parse date
+            // We have a row but token is expired or can't parse date
             $qboStatusText = 'QuickBooks token has expired or is invalid. Please reconnect.';
         }
     }
@@ -106,7 +106,7 @@ try {
         $notificationEmail = $row['setting_value'];
     }
 } catch (Throwable $e) {
-    // Don’t break the page if this fails; just omit the email display.
+    // Don't break the page if this fails; just omit the email display.
     $notificationEmail = null;
 }
 
@@ -117,130 +117,361 @@ try {
     <meta charset="UTF-8">
     <title>QuickBooks / Planning Center Sync</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700&display=swap');
+        :root {
+            --bg: #0b1224;
+            --panel: rgba(15, 25, 46, 0.78);
+            --card: rgba(22, 32, 55, 0.9);
+            --border: rgba(255, 255, 255, 0.08);
+            --text: #e9eef7;
+            --muted: #9daccc;
+            --accent: #2ea8ff;
+            --accent-strong: #0d7adf;
+            --success: #39d98a;
+            --warn: #f2c94c;
+            --error: #ff7a7a;
+        }
         body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            margin: 2rem;
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
+            margin: 0;
+            background: radial-gradient(circle at 15% 20%, rgba(46, 168, 255, 0.12), transparent 25%),
+                        radial-gradient(circle at 85% 10%, rgba(57, 217, 138, 0.15), transparent 22%),
+                        radial-gradient(circle at 70% 70%, rgba(242, 201, 76, 0.08), transparent 30%),
+                        var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        * { box-sizing: border-box; }
+        .page {
+            max-width: 1150px;
+            margin: 0 auto;
+            padding: 2.5rem 1.25rem 3rem;
+        }
+        .hero {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 1.6rem 1.8rem;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+            position: relative;
+            overflow: hidden;
+        }
+        .hero::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at 30% 40%, rgba(46,168,255,0.15), transparent 35%),
+                        radial-gradient(circle at 80% 10%, rgba(57,217,138,0.12), transparent 35%);
+            pointer-events: none;
+        }
+        .hero > * { position: relative; z-index: 1; }
+        .eyebrow {
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--muted);
+            font-size: 0.8rem;
+            margin-bottom: 0.35rem;
         }
         h1 {
-            margin-bottom: 1rem;
+            margin: 0 0 0.4rem;
+            font-size: 2.1rem;
+            letter-spacing: -0.01em;
         }
-        .flash-success {
-            padding: 0.6rem 0.8rem;
-            background: #e6ffed;
-            border: 1px solid #b7eb8f;
-            margin-bottom: 1rem;
+        .lede {
+            color: var(--muted);
+            margin: 0;
+            max-width: 56ch;
+            line-height: 1.6;
         }
-        .flash-error {
-            padding: 0.6rem 0.8rem;
-            background: #ffecec;
-            border: 1px solid #ffaeae;
-            margin-bottom: 1rem;
+        .flash {
+            padding: 0.85rem 1rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            margin-top: 1.1rem;
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 0.75rem;
+            align-items: center;
         }
-        .status-box {
-            padding: 0.6rem 0.8rem;
-            border-radius: 4px;
-            margin-bottom: 0.75rem;
+        .flash.success {
+            background: rgba(57, 217, 138, 0.12);
+            border-color: rgba(57, 217, 138, 0.35);
         }
-        .status-ok {
-            background: #f6ffed;
-            border: 1px solid #b7eb8f;
+        .flash.error {
+            background: rgba(255, 122, 122, 0.12);
+            border-color: rgba(255, 122, 122, 0.35);
         }
-        .status-warn {
-            background: #fff7e6;
-            border: 1px solid #ffd591;
+        .flash .tag {
+            background: rgba(255, 255, 255, 0.06);
+            padding: 0.35rem 0.65rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            border: 1px solid var(--border);
         }
-        .status-error {
-            background: #ffecec;
-            border: 1px solid #ffaeae;
+        .section-grid {
+            margin-top: 1.5rem;
+            display: grid;
+            gap: 1rem;
+        }
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 0.85rem;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1rem 1.1rem;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+        }
+        .card.section {
+            padding: 1.3rem 1.35rem;
+        }
+        .status {
+            display: grid;
+            gap: 0.15rem;
+        }
+        .status .label {
+            font-size: 0.9rem;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            letter-spacing: 0.01em;
+        }
+        .status .value {
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.35rem 0.65rem;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: #0f172a;
+        }
+        .pill.ok { background: rgba(57, 217, 138, 0.9); }
+        .pill.warn { background: rgba(242, 201, 76, 0.9); }
+        .pill.error { background: rgba(255, 122, 122, 0.9); }
+        .pill.info { background: rgba(46, 168, 255, 0.9); }
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.85rem;
+        }
+        .section-title {
+            margin: 0;
+            font-size: 1.1rem;
+            letter-spacing: -0.01em;
         }
         .btn {
-            display: inline-block;
-            padding: 0.5rem 0.9rem;
-            background: #1677ff;
-            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.65rem 1rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+            color: #0b1324;
+            font-weight: 700;
             text-decoration: none;
-            border-radius: 4px;
-            margin-bottom: 1rem;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 10px 25px rgba(13,122,223,0.35);
+            transition: transform 120ms ease, box-shadow 120ms ease, background 150ms ease;
         }
         .btn:hover {
-            background: #0b5ed7;
+            transform: translateY(-1px);
+            box-shadow: 0 14px 30px rgba(13,122,223,0.4);
         }
-        hr {
-            margin: 1.5rem 0;
+        .btn.secondary {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+            box-shadow: none;
         }
-        ul {
-            margin-top: 0.4rem;
+        .action-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 0.8rem;
+        }
+        .tile {
+            display: grid;
+            gap: 0.3rem;
+            padding: 0.9rem 1rem;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid var(--border);
+            text-decoration: none;
+            color: var(--text);
+            transition: border-color 120ms ease, transform 120ms ease, background 120ms ease;
+        }
+        .tile:hover {
+            border-color: rgba(46, 168, 255, 0.45);
+            background: rgba(46,168,255,0.06);
+            transform: translateY(-1px);
+        }
+        .tile .title {
+            font-weight: 700;
+            letter-spacing: -0.01em;
+        }
+        .tile .desc {
+            color: var(--muted);
+            font-size: 0.92rem;
+            line-height: 1.4;
+        }
+        .list {
+            display: grid;
+            gap: 0.45rem;
+            padding: 0.2rem 0 0.1rem;
+        }
+        .list a {
+            color: var(--text);
+            text-decoration: none;
+            border-bottom: 1px dashed rgba(255,255,255,0.12);
+            padding-bottom: 0.15rem;
+        }
+        .list a:hover {
+            border-color: rgba(46,168,255,0.55);
+            color: #dff1ff;
         }
         .small {
-            font-size: 0.85rem;
-            color: #666;
+            font-size: 0.9rem;
+            color: var(--muted);
+            line-height: 1.5;
         }
-        a {
-            color: #1677ff;
+        .footnote {
+            margin-top: 1.4rem;
+        }
+        @media (max-width: 720px) {
+            .hero { padding: 1.35rem 1.15rem; }
+            .section-header { align-items: flex-start; }
+            .btn { width: 100%; justify-content: center; }
         }
     </style>
 </head>
 <body>
+<div class="page">
+    <div class="hero">
+        <div class="eyebrow">Control Center</div>
+        <h1>QuickBooks &harr; Planning Center Sync</h1>
+        <p class="lede">Keep credentials connected, run one-off syncs, and quickly jump to mapping and configuration screens.</p>
 
-<h1>QuickBooks / Planning Center Sync</h1>
+        <?php if ($flashSuccess): ?>
+            <div class="flash success">
+                <span class="tag">Success</span>
+                <div>Successfully connected to QuickBooks and stored tokens.</div>
+            </div>
+        <?php endif; ?>
 
-<?php if ($flashSuccess): ?>
-    <div class="flash-success">
-        Successfully connected to QuickBooks and stored tokens.
+        <?php if ($flashError): ?>
+            <div class="flash error">
+                <span class="tag">Issue</span>
+                <div>Error during QuickBooks connection:<br><?= htmlspecialchars($flashError, ENT_QUOTES, 'UTF-8') ?></div>
+            </div>
+        <?php endif; ?>
     </div>
-<?php endif; ?>
 
-<?php if ($flashError): ?>
-    <div class="flash-error">
-        Error during QuickBooks connection:<br>
-        <?= htmlspecialchars($flashError, ENT_QUOTES, 'UTF-8') ?>
+    <div class="section-grid" style="margin-top: 1.1rem;">
+        <div class="status-grid">
+            <div class="card status">
+                <div class="label">QuickBooks</div>
+                <div class="value"><?= $qboStatusText ?></div>
+                <div class="pill <?= $qboConnected ? 'ok' : 'warn' ?>">
+                    <?= $qboConnected ? 'Connected' : 'Needs attention' ?>
+                </div>
+            </div>
+            <div class="card status">
+                <div class="label">Planning Center</div>
+                <div class="value"><?= htmlspecialchars($pcoStatusText, ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="pill <?= $pcoConnected ? 'ok' : 'warn' ?>">
+                    <?= $pcoConnected ? 'Configured' : 'Not ready' ?>
+                </div>
+            </div>
+            <?php if ($notificationEmail): ?>
+                <div class="card status">
+                    <div class="label">Notification Email</div>
+                    <div class="value"><?= htmlspecialchars($notificationEmail, ENT_QUOTES, 'UTF-8') ?></div>
+                    <div class="pill info">Active</div>
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <div class="card section">
+            <div class="section-header">
+                <div>
+                    <div class="eyebrow">Connections</div>
+                    <p class="section-title">Manage credentials and mappings</p>
+                </div>
+                <a href="oauth-start.php" class="btn">
+                    <?= $qboConnected ? 'Reconnect QuickBooks' : 'Connect QuickBooks' ?>
+                </a>
+            </div>
+            <div class="action-grid">
+                <a class="tile" href="settings.php">
+                    <span class="title">Account setup</span>
+                    <span class="desc">Edit QBO accounts and notification email preferences.</span>
+                </a>
+                <a class="tile" href="fund-mapping.php">
+                    <span class="title">Fund &rarr; Class/Location</span>
+                    <span class="desc">Maintain mapping rules so deposits land in the right QBO buckets.</span>
+                </a>
+            </div>
+        </div>
+
+        <div class="card section">
+            <div class="section-header">
+                <div>
+                    <div class="eyebrow">Sync actions</div>
+                    <p class="section-title">Run or inspect data flows</p>
+                </div>
+                <a href="run-sync.php" class="btn secondary">Run sync now</a>
+            </div>
+            <div class="action-grid">
+                <a class="tile" href="run-sync-preview.php">
+                    <span class="title">Preview Stripe donations</span>
+                    <span class="desc">Check upcoming donations with the current completed_at filters.</span>
+                </a>
+                <a class="tile" href="run-sync.php">
+                    <span class="title">Immediate sync</span>
+                    <span class="desc">Push eligible PCO Stripe payouts into QuickBooks right away.</span>
+                </a>
+                <a class="tile" href="run-batch-sync.php">
+                    <span class="title">Committed batch sync</span>
+                    <span class="desc">Process queued batches that were confirmed for bookkeeping.</span>
+                </a>
+                <a class="tile" href="logs.php">
+                    <span class="title">Recent sync logs</span>
+                    <span class="desc">Review latest runs, errors, and durations for quick troubleshooting.</span>
+                </a>
+            </div>
+        </div>
+
+        <div class="card section">
+            <div class="section-header">
+                <div>
+                    <div class="eyebrow">Admin</div>
+                    <p class="section-title">Session & housekeeping</p>
+                </div>
+            </div>
+            <div class="list">
+                <a href="create_admin.php">Create another admin user</a>
+                <a href="logout.php">Log out</a>
+                <a href="test-pco.php">Test PCO connection</a>
+                <a href="test-donations.php">Test donations payload</a>
+            </div>
+        </div>
+
+        <p class="small footnote">
+            This dashboard helps trigger manual PCO Stripe payout syncs, review logs, adjust fund mapping, and keep notifications flowing.
+        </p>
     </div>
-<?php endif; ?>
-
-<div class="status-box <?= $qboConnected ? 'status-ok' : 'status-warn' ?>">
-    <strong>QuickBooks status:</strong>
-    <?= $qboStatusText ?>
 </div>
-
-<div class="status-box <?= $pcoConnected ? 'status-ok' : 'status-warn' ?>">
-    <strong>Planning Center status:</strong>
-    <?= htmlspecialchars($pcoStatusText, ENT_QUOTES, 'UTF-8') ?>
-</div>
-
-<?php if ($notificationEmail): ?>
-    <p class="small">
-        Notifications will be sent to:
-        <strong><?= htmlspecialchars($notificationEmail, ENT_QUOTES, 'UTF-8') ?></strong>
-    </p>
-<?php endif; ?>
-
-<p>
-    <a href="oauth-start.php" class="btn">
-        <?= $qboConnected ? 'Reconnect QuickBooks' : 'Connect to QuickBooks' ?>
-    </a>
-</p>
-
-<hr>
-<p><a href="settings.php">Settings (accounts & notification email)</a></p>
-<p><a href="fund-mapping.php">Manage Fund &rarr; QBO Class/Location mappings</a></p>
-<p><a href="run-sync-preview.php">Preview Stripe donations (completed_at filter)</a></p>
-<p><a href="run-sync.php">Run sync to QuickBooks now</a></p>
-<p><a href="run-batch-sync.php">Run committed batch sync now</a></p>
-
-<p></p>
-<p><a href="logout.php">Log out</a></p>
-<p><a href="logs.php">View recent sync logs</a></p>
-
-
-<p class="small" style="margin-top:1.5rem;">
-    This dashboard will eventually let you:
-</p>
-<ul class="small">
-    <li>Trigger a manual sync of PCO Stripe payouts &rarr; QBO deposits</li>
-    <li>View recent sync logs and errors</li>
-    <li>Adjust fund &rarr; account/class/location mappings</li>
-    <li>Set the notification email address</li>
-</ul>
-
 </body>
 </html>
