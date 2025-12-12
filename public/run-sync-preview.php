@@ -9,6 +9,23 @@ require_once __DIR__ . '/../src/SyncService.php';
 require_once __DIR__ . '/../src/Auth.php';
 Auth::requireLogin();
 
+function get_display_timezone(PDO $pdo): DateTimeZone {
+    $tz = null;
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM sync_settings WHERE setting_key = 'display_timezone' ORDER BY id DESC LIMIT 1");
+        $stmt->execute();
+        $val = $stmt->fetchColumn();
+        if ($val) { $tz = new DateTimeZone((string)$val); }
+    } catch (Throwable $e) {
+        $tz = null;
+    }
+    return $tz ?? new DateTimeZone('UTC');
+}
+
+function fmt(DateTimeInterface $dt, DateTimeZone $tz): string {
+    return $dt->setTimezone($tz)->format('Y-m-d h:i A T');
+}
+
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
@@ -29,6 +46,7 @@ try {
 }
 
 $service = new SyncService($pdo, $pco);
+$displayTz = get_display_timezone($pdo);
 
 // days back to look based on completed_at
 $days = isset($_GET['days']) ? (int)$_GET['days'] : 7;
@@ -293,12 +311,12 @@ $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
 
         <div class="metrics-grid">
             <div class="metric">
-                <div class="label">Window (UTC) start</div>
-                <div class="value"><?= htmlspecialchars($preview['since']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="label">Window start (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
+                <div class="value"><?= htmlspecialchars(fmt($preview['since'], $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
             </div>
             <div class="metric">
-                <div class="label">Window (UTC) end</div>
-                <div class="value"><?= htmlspecialchars($preview['until']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="label">Window end (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
+                <div class="value"><?= htmlspecialchars(fmt($preview['until'], $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
             </div>
             <div class="metric">
                 <div class="label">Donations evaluated</div>

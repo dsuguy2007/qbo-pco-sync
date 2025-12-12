@@ -358,6 +358,25 @@ function renderLayout(string $title, string $heroTitle, string $lede, string $co
     <?php
 }
 
+function get_display_timezone(PDO $pdo): DateTimeZone
+{
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM sync_settings WHERE setting_key = 'display_timezone' ORDER BY id DESC LIMIT 1");
+        $stmt->execute();
+        $val = $stmt->fetchColumn();
+        if ($val) {
+            return new DateTimeZone((string)$val);
+        }
+    } catch (Throwable $e) {
+    }
+    return new DateTimeZone('UTC');
+}
+
+function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
+{
+    return $dt->setTimezone($tz)->format('Y-m-d h:i A T');
+}
+
 // --- Bootstrap DB / clients --------------------------------------------------
 
 try {
@@ -389,6 +408,7 @@ try {
 }
 
 $service = new SyncService($pdo, $pco);
+$displayTz = get_display_timezone($pdo);
 
 // --- Determine sync window ---------------------------------------------------
 
@@ -707,26 +727,26 @@ if (!empty($errors)): ?>
     </div>
 <?php endif; ?>
 
-<div class="card">
-    <div class="section-header">
-        <div>
-            <p class="section-title">Window used</p>
-            <p class="section-sub">completed_at range</p>
+    <div class="card">
+        <div class="section-header">
+            <div>
+                <p class="section-title">Window used</p>
+                <p class="section-sub">completed_at range (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</p>
+            </div>
         </div>
-    </div>
-    <div class="metrics-grid">
-        <div class="metric">
-            <div class="label">From (UTC)</div>
-            <div class="value"><?= htmlspecialchars($preview['since']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></div>
-        </div>
-        <div class="metric">
-            <div class="label">To (UTC)</div>
-            <div class="value"><?= htmlspecialchars($preview['until']->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></div>
-        </div>
-        <div class="metric">
-            <div class="label">Fund rows processed</div>
-            <div class="value"><?= count($preview['funds']) ?></div>
-        </div>
+        <div class="metrics-grid">
+            <div class="metric">
+                <div class="label">From</div>
+                <div class="value"><?= htmlspecialchars(fmt_dt($preview['since'], $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
+            </div>
+            <div class="metric">
+                <div class="label">To</div>
+                <div class="value"><?= htmlspecialchars(fmt_dt($preview['until'], $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
+            </div>
+            <div class="metric">
+                <div class="label">Fund rows processed</div>
+                <div class="value"><?= count($preview['funds']) ?></div>
+            </div>
     </div>
 </div>
 

@@ -8,9 +8,43 @@ require_once __DIR__ . '/../src/Auth.php';
 
 Auth::requireLogin();
 
+function get_display_timezone(PDO $pdo): DateTimeZone
+{
+    $tz = null;
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM sync_settings WHERE setting_key = 'display_timezone' ORDER BY id DESC LIMIT 1");
+        $stmt->execute();
+        $val = $stmt->fetchColumn();
+        if ($val) {
+            $tz = new DateTimeZone((string)$val);
+        }
+    } catch (Throwable $e) {
+        $tz = null;
+    }
+
+    return $tz ?? new DateTimeZone('UTC');
+}
+
+function fmt_dt_string(?string $value, DateTimeZone $tz): string
+{
+    if ($value === null || $value === '') {
+        return '';
+    }
+
+    try {
+        $dt = new DateTimeImmutable($value, new DateTimeZone('UTC'));
+        return $dt->setTimezone($tz)->format('Y-m-d h:i A T');
+    } catch (Throwable $e) {
+        // fall through
+    }
+
+    return $value;
+}
+
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $displayTz = get_display_timezone($pdo);
 } catch (Throwable $e) {
     http_response_code(500);
     echo '<h1>Database error</h1>';
@@ -362,8 +396,8 @@ try {
                     <tr>
                         <th>ID</th>
                         <th>Sync Type</th>
-                        <th>Started At (UTC)</th>
-                        <th>Finished At (UTC)</th>
+                        <th>Started At (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</th>
+                        <th>Finished At (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</th>
                         <th>Status</th>
                         <th>Summary</th>
                         <th>Details</th>
@@ -385,8 +419,8 @@ try {
                         <tr>
                             <td><?= (int)$log['id'] ?></td>
                             <td class="run-type"><?= htmlspecialchars($log['sync_type'] ?? '', ENT_QUOTES, 'UTF-8') ?></td>
-                            <td><?= htmlspecialchars($log['started_at'] ?? '', ENT_QUOTES, 'UTF-8') ?></td>
-                            <td><?= htmlspecialchars($log['finished_at'] ?? '', ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= htmlspecialchars(fmt_dt_string($log['started_at'] ?? '', $displayTz), ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= htmlspecialchars(fmt_dt_string($log['finished_at'] ?? '', $displayTz), ENT_QUOTES, 'UTF-8') ?></td>
                             <td><span class="pill <?= $statusClass ?>"><?= htmlspecialchars($status, ENT_QUOTES, 'UTF-8') ?></span></td>
                             <td class="summary-text"><?= htmlspecialchars($log['summary'] ?? '', ENT_QUOTES, 'UTF-8') ?></td>
                             <td class="details"><?= htmlspecialchars($log['details'] ?? '', ENT_QUOTES, 'UTF-8') ?></td>

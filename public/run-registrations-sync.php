@@ -52,6 +52,28 @@ function mark_synced_deposit(PDO $pdo, string $type, string $fingerprint): void
     ]);
 }
 
+function get_display_timezone(PDO $pdo): DateTimeZone
+{
+    $tz = null;
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM sync_settings WHERE setting_key = 'display_timezone' ORDER BY id DESC LIMIT 1");
+        $stmt->execute();
+        $val = $stmt->fetchColumn();
+        if ($val) {
+            $tz = new DateTimeZone((string)$val);
+        }
+    } catch (Throwable $e) {
+        $tz = null;
+    }
+
+    return $tz ?? new DateTimeZone('UTC');
+}
+
+function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
+{
+    return $dt->setTimezone($tz)->format('Y-m-d h:i A T');
+}
+
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
@@ -59,6 +81,7 @@ function mark_synced_deposit(PDO $pdo, string $type, string $fingerprint): void
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $displayTz = get_display_timezone($pdo);
 } catch (Throwable $e) {
     http_response_code(500);
     echo '<h1>Database error</h1>';
@@ -93,7 +116,9 @@ $lastReg = get_setting($pdo, 'last_registrations_paid_at');
 
 if ($lastReg === null) {
     set_setting($pdo, 'last_registrations_paid_at', $nowUtc->format(DateTimeInterface::ATOM));
-    echo '<h1>Registrations sync</h1><p>Initialized window at ' . htmlspecialchars($nowUtc->format('Y-m-d H:i:s T'), ENT_QUOTES, 'UTF-8') . '. No payments imported.</p><p><a href="index.php">&larr; Back to dashboard</a></p>';
+    echo '<h1>Registrations sync</h1><p>Initialized window at ' .
+        htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') .
+        ' (' . htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') . '). No payments imported.</p><p><a href="index.php">&larr; Back to dashboard</a></p>';
     exit;
 }
 
@@ -224,7 +249,7 @@ foreach ($payments as $pay) {
         $eventName,
         $personName ? ('Paid by ' . $personName) : null,
         $eventDate ? ('Event date: ' . $eventDate) : null,
-        'Paid at: ' . $paidAtDt->format('Y-m-d H:i:s T'),
+        'Paid at: ' . fmt_dt($paidAtDt, $displayTz),
     ]);
     $description = implode(' | ', $descPieces);
 
@@ -368,7 +393,13 @@ try {
     <?php endif; ?>
 
     <div class="card">
-        <p class="muted">Window used (paid_at): <strong><?= htmlspecialchars($sinceUtc->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></strong> to <strong><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></strong></p>
+        <p class="muted">
+            Window used (paid_at):
+            <strong><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
+            to
+            <strong><?= htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></strong>
+            (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)
+        </p>
         <table>
             <tr><th>Payments processed</th><td><?= count($processedIds) ?></td></tr>
             <tr><th>Gross</th><td>$<?= number_format($grossTotal, 2) ?></td></tr>

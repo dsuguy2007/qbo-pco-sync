@@ -34,6 +34,20 @@ function set_setting(PDO $pdo, string $key, string $value): void
     ]);
 }
 
+function format_display_time(?string $value, DateTimeZone $tz): ?string
+{
+    if ($value === null || $value === '') {
+        return null;
+    }
+
+    try {
+        $dt = new DateTimeImmutable($value);
+        return $dt->setTimezone($tz)->format('Y-m-d h:i A T');
+    } catch (Throwable $e) {
+        return $value;
+    }
+}
+
 // --- Bootstrap DB ------------------------------------------------------------
 
 try {
@@ -108,6 +122,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         set_setting($pdo, 'reg_class_name', $regClassName);
         set_setting($pdo, 'reg_location_name', $regLocationName);
 
+        // Display timezone
+        $tzInput = trim((string)($_POST['display_timezone'] ?? ''));
+        if ($tzInput === '') {
+            $tzInput = 'UTC';
+        }
+        try {
+            $tzObj = new DateTimeZone($tzInput);
+            set_setting($pdo, 'display_timezone', $tzObj->getName());
+            $displayTimezone    = $tzObj->getName();
+            $displayTimezoneObj = $tzObj;
+        } catch (Throwable $e) {
+            // leave existing on error
+        }
+
         $message = 'Settings saved successfully.';
     } catch (Throwable $e) {
         $error = 'Error saving settings: ' . $e->getMessage();
@@ -145,9 +173,20 @@ $regIncomeAccountName = get_setting($pdo, 'reg_income_account_name')
 $regClassName = get_setting($pdo, 'reg_class_name') ?? '';
 $regLocationName = get_setting($pdo, 'reg_location_name') ?? '';
 
+// Display timezone
+$displayTimezone = get_setting($pdo, 'display_timezone') ?? 'UTC';
+try {
+    $displayTimezoneObj = new DateTimeZone($displayTimezone);
+} catch (Throwable $e) {
+    $displayTimezone     = 'UTC';
+    $displayTimezoneObj  = new DateTimeZone('UTC');
+}
+
 // Last sync windows (read-only info)
 $lastStripeCompletedAt = get_setting($pdo, 'last_completed_at');
 $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
+$lastStripeDisplay     = format_display_time($lastStripeCompletedAt, $displayTimezoneObj);
+$lastBatchDisplay      = format_display_time($lastBatchCompletedAt, $displayTimezoneObj);
 
 ?>
 <!DOCTYPE html>
@@ -357,6 +396,20 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
         .readonly-values code {
             font-size: 0.9rem;
             color: #d7e8ff;
+        }
+        .select {
+            width: 100%;
+            max-width: 320px;
+            padding: 0.65rem 0.75rem;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.14);
+            background: rgba(255,255,255,0.04);
+            color: #0d7adf;
+            font-size: 1rem;
+        }
+        .select:focus {
+            outline: 2px solid rgba(46,168,255,0.4);
+            border-color: rgba(46,168,255,0.45);
         }
         .actions {
             display: flex;
@@ -593,6 +646,29 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
         <div class="card">
             <div class="section-header">
                 <div>
+                    <p class="eyebrow" style="margin-bottom: 0.35rem;">Display</p>
+                    <p class="section-title">Timezone</p>
+                    <p class="section-sub">Used for showing dates/times on dashboard and previews.</p>
+                </div>
+            </div>
+            <div class="field">
+                <label for="display_timezone">Display timezone</label>
+                <select id="display_timezone" name="display_timezone" class="select">
+                    <?php
+                    $tzList = DateTimeZone::listIdentifiers();
+                    foreach ($tzList as $tz) {
+                        $sel = ($tz === $displayTimezone) ? 'selected' : '';
+                        echo '<option value="' . htmlspecialchars($tz, ENT_QUOTES, 'UTF-8') . "\" {$sel}>" . htmlspecialchars($tz, ENT_QUOTES, 'UTF-8') . '</option>';
+                    }
+                    ?>
+                </select>
+                <div class="hint">Times will be shown in this timezone in 12-hour format.</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="section-header">
+                <div>
                     <p class="eyebrow" style="margin-bottom: 0.35rem;">Sync windows</p>
                     <p class="section-title">Read-only</p>
                     <p class="section-sub">Reference for the most recent sync windows.</p>
@@ -600,15 +676,15 @@ $lastBatchCompletedAt  = get_setting($pdo, 'last_batch_sync_completed_at');
             </div>
             <div class="readonly-values">
                 <div>
-                    <strong>Last Stripe payout sync window end (UTC):</strong>
-                    <?php echo $lastStripeCompletedAt
-                        ? htmlspecialchars($lastStripeCompletedAt, ENT_QUOTES, 'UTF-8')
+                    <strong>Last Stripe payout sync window end (<?= htmlspecialchars($displayTimezoneObj->getName(), ENT_QUOTES, 'UTF-8') ?>):</strong>
+                    <?php echo $lastStripeDisplay
+                        ? htmlspecialchars($lastStripeDisplay, ENT_QUOTES, 'UTF-8')
                         : '<em>Not set yet</em>'; ?>
                 </div>
                 <div>
-                    <strong>Last batch sync window end (UTC):</strong>
-                    <?php echo $lastBatchCompletedAt
-                        ? htmlspecialchars($lastBatchCompletedAt, ENT_QUOTES, 'UTF-8')
+                    <strong>Last batch sync window end (<?= htmlspecialchars($displayTimezoneObj->getName(), ENT_QUOTES, 'UTF-8') ?>):</strong>
+                    <?php echo $lastBatchDisplay
+                        ? htmlspecialchars($lastBatchDisplay, ENT_QUOTES, 'UTF-8')
                         : '<em>Not set yet</em>'; ?>
                 </div>
                 <div class="hint">

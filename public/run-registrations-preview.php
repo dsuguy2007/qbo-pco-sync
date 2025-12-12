@@ -16,6 +16,28 @@ $batchesEvaluated   = 0;
 $grossTotal = 0.0;
 $feeTotal   = 0.0;
 
+function get_display_timezone(PDO $pdo): DateTimeZone
+{
+    $tz = null;
+    try {
+        $stmt = $pdo->prepare("SELECT setting_value FROM sync_settings WHERE setting_key = 'display_timezone' ORDER BY id DESC LIMIT 1");
+        $stmt->execute();
+        $val = $stmt->fetchColumn();
+        if ($val) {
+            $tz = new DateTimeZone((string)$val);
+        }
+    } catch (Throwable $e) {
+        $tz = null;
+    }
+
+    return $tz ?? new DateTimeZone('UTC');
+}
+
+function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
+{
+    return $dt->setTimezone($tz)->format('Y-m-d h:i A T');
+}
+
 $days = isset($_GET['days']) ? (int)$_GET['days'] : 7;
 if ($days < 1) {
     $days = 1;
@@ -27,6 +49,7 @@ $sinceUtc = $nowUtc->sub(new DateInterval('P' . $days . 'D'));
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $displayTz = get_display_timezone($pdo);
 } catch (Throwable $e) {
     http_response_code(500);
     echo '<h1>Database error</h1>';
@@ -274,12 +297,12 @@ try {
 
         <div class="metrics-grid">
             <div class="metric">
-                <div class="label">Window start (UTC)</div>
-                <div class="value"><?= htmlspecialchars($sinceUtc->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="label">Window start (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
+                <div class="value"><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
             </div>
             <div class="metric">
-                <div class="label">Window end (UTC)</div>
-                <div class="value"><?= htmlspecialchars($nowUtc->format('Y-m-d H:i:s'), ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="label">Window end (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
+                <div class="value"><?= htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
             </div>
             <div class="metric">
                 <div class="label">Payments evaluated</div>
