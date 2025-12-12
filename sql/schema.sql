@@ -1,61 +1,140 @@
--- Schema for QBO–PCO Sync
+SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
+START TRANSACTION;
+SET time_zone = "+00:00";
 
-CREATE TABLE IF NOT EXISTS sync_settings (
-  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  setting_key VARCHAR(100) NOT NULL,
-  setting_value TEXT NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_sync_settings_key (setting_key)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!40101 SET NAMES utf8mb4 */;
 
--- Basic user table for app login
-CREATE TABLE IF NOT EXISTS app_users (
-  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  username VARCHAR(50) NOT NULL UNIQUE,
-  password_hash VARCHAR(255) NOT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE DATABASE IF NOT EXISTS `qbo_pco_sync` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+USE `qbo_pco_sync`;
 
--- PCO funds cached locally
-CREATE TABLE IF NOT EXISTS pco_funds (
-  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  pco_fund_id INT UNSIGNED NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  active TINYINT(1) NOT NULL DEFAULT 1,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_pco_funds_fund_id (pco_fund_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE `app_users` (
+  `id` int UNSIGNED NOT NULL,
+  `username` varchar(50) NOT NULL,
+  `password_hash` varchar(255) NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Mapping from PCO fund -> QBO Class / Location
-CREATE TABLE IF NOT EXISTS pco_fund_mappings (
-  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  pco_fund_id INT UNSIGNED NOT NULL,
-  qbo_class_name VARCHAR(255) DEFAULT NULL,
-  qbo_location_name VARCHAR(255) DEFAULT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_pco_fund_mappings_fund_id (pco_fund_id),
-  CONSTRAINT fk_pco_fund_mappings_fund
-    FOREIGN KEY (pco_fund_id) REFERENCES pco_funds (pco_fund_id)
-      ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE `fund_mappings` (
+  `id` int UNSIGNED NOT NULL,
+  `pco_fund_id` varchar(32) COLLATE utf8mb4_general_ci NOT NULL,
+  `pco_fund_name` varchar(255) COLLATE utf8mb4_general_ci NOT NULL,
+  `qbo_class_name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `qbo_location_name` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- QuickBooks OAuth tokens
-CREATE TABLE IF NOT EXISTS qbo_tokens (
-  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  realm_id VARCHAR(32) NOT NULL,
-  access_token TEXT NOT NULL,
-  refresh_token TEXT NOT NULL,
-  token_type VARCHAR(32) DEFAULT NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
-  access_token_expires_at DATETIME NULL,
-  refresh_token_expires_at DATETIME NULL,
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_qbo_tokens_realm_id (realm_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE `qbo_tokens` (
+  `id` int UNSIGNED NOT NULL,
+  `realm_id` varchar(64) NOT NULL,
+  `access_token` text NOT NULL,
+  `refresh_token` text NOT NULL,
+  `token_type` varchar(32) DEFAULT NULL,
+  `expires_at` datetime NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `synced_batches` (
+  `id` int NOT NULL,
+  `batch_id` varchar(191) NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `synced_deposits` (
+  `id` int NOT NULL,
+  `type` varchar(32) NOT NULL,
+  `fingerprint` varchar(191) NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `sync_logs` (
+  `id` int UNSIGNED NOT NULL,
+  `sync_type` enum('stripe','batch') NOT NULL,
+  `started_at` datetime NOT NULL,
+  `finished_at` datetime DEFAULT NULL,
+  `status` enum('success','error','partial') NOT NULL DEFAULT 'success',
+  `summary` varchar(255) DEFAULT NULL,
+  `details` text,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE `sync_runs` (
+  `id` bigint UNSIGNED NOT NULL,
+  `started_at` datetime NOT NULL,
+  `finished_at` datetime DEFAULT NULL,
+  `status` enum('running','success','warning','error') COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'running',
+  `summary` text COLLATE utf8mb4_general_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE `sync_settings` (
+  `id` int UNSIGNED NOT NULL,
+  `setting_key` varchar(100) NOT NULL,
+  `setting_value` text,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+
+ALTER TABLE `app_users`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `username` (`username`);
+
+ALTER TABLE `fund_mappings`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uniq_pco_fund` (`pco_fund_id`);
+
+ALTER TABLE `qbo_tokens`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uq_realm` (`realm_id`);
+
+ALTER TABLE `synced_batches`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uniq_batch` (`batch_id`);
+
+ALTER TABLE `synced_deposits`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uniq_type_fingerprint` (`type`,`fingerprint`);
+
+ALTER TABLE `sync_logs`
+  ADD PRIMARY KEY (`id`);
+
+ALTER TABLE `sync_runs`
+  ADD PRIMARY KEY (`id`);
+
+ALTER TABLE `sync_settings`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uq_setting_key` (`setting_key`);
+
+
+ALTER TABLE `app_users`
+  MODIFY `id` int UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `fund_mappings`
+  MODIFY `id` int UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `qbo_tokens`
+  MODIFY `id` int UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `synced_batches`
+  MODIFY `id` int NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `synced_deposits`
+  MODIFY `id` int NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `sync_logs`
+  MODIFY `id` int UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `sync_runs`
+  MODIFY `id` bigint UNSIGNED NOT NULL AUTO_INCREMENT;
+
+ALTER TABLE `sync_settings`
+  MODIFY `id` int UNSIGNED NOT NULL AUTO_INCREMENT;
+COMMIT;
+
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
