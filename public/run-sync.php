@@ -11,13 +11,22 @@ require_once __DIR__ . '/../src/SyncLogger.php';
 require_once __DIR__ . '/../src/Auth.php';
 
 $webhookSecretValid = false;
-if (isset($_GET['webhook_secret'], $config['webhook_secret']) && hash_equals($config['webhook_secret'], (string)$_GET['webhook_secret'])) {
-    $webhookSecretValid = true;
+$incomingSecret     = $_GET['webhook_secret'] ?? null;
+if ($incomingSecret !== null && !empty($config['webhook_secrets']) && is_array($config['webhook_secrets'])) {
+    foreach ($config['webhook_secrets'] as $s) {
+        if (!empty($s) && hash_equals((string)$s, (string)$incomingSecret)) {
+            $webhookSecretValid = true;
+            break;
+        }
+    }
 }
 
 if (!$webhookSecretValid) {
     Auth::requireLogin();
 }
+
+$logger = null;
+$logId  = null;
 
 /**
  * Get a setting from sync_settings.
@@ -95,6 +104,19 @@ function mark_synced_stripe_deposit(PDO $pdo, string $fingerprint): void
         ':fp'         => $fingerprint,
         ':created_at' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s'),
     ]);
+}
+
+function finish_log(?SyncLogger $logger, ?int $logId, string $status, string $summary, ?string $details = null): void
+{
+    if ($logger === null || $logId === null) {
+        return;
+    }
+
+    try {
+        $logger->finish($logId, $status, $summary, $details);
+    } catch (Throwable $e) {
+        // Swallow logging errors to avoid interrupting the user flow.
+    }
 }
 
 /**
@@ -382,6 +404,8 @@ function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $logger = new SyncLogger($pdo);
+    $logId  = $logger->start('stripe');
 } catch (Throwable $e) {
     http_response_code(500);
     echo '<h1>Sync error</h1>';
@@ -392,6 +416,7 @@ try {
 try {
     $pco = new PcoClient($config);
 } catch (Throwable $e) {
+    finish_log($logger, $logId, 'error', 'PCO client error during Stripe sync.', $e->getMessage());
     http_response_code(500);
     echo '<h1>PCO error</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
@@ -401,6 +426,7 @@ try {
 try {
     $qbo = new QboClient($pdo, $config);
 } catch (Throwable $e) {
+    finish_log($logger, $logId, 'error', 'QBO client error during Stripe sync.', $e->getMessage());
     http_response_code(500);
     echo '<h1>QBO error</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
@@ -417,6 +443,13 @@ $lastSyncStr = get_setting($pdo, 'last_completed_at');
 
 if ($lastSyncStr === null) {
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+    finish_log(
+        $logger,
+        $logId,
+        'success',
+        'Initialized Stripe sync window (no donations imported).',
+        null
+    );
 
     ob_start();
     ?>
@@ -442,6 +475,13 @@ try {
     $sinceUtc = new DateTimeImmutable($lastSyncStr);
 } catch (Throwable $e) {
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+    finish_log(
+        $logger,
+        $logId,
+        'error',
+        'Invalid last_completed_at value; reset to now for Stripe sync.',
+        $e->getMessage()
+    );
 
     ob_start();
     ?>
@@ -466,6 +506,13 @@ try {
 try {
     $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
 } catch (Throwable $e) {
+    finish_log(
+        $logger,
+        $logId,
+        'error',
+        'Error building Stripe sync preview.',
+        $e->getMessage()
+    );
     http_response_code(500);
     echo '<h1>Sync error</h1>';
     echo '<pre>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</pre>';
@@ -475,6 +522,13 @@ try {
 // If there are no funds to deposit, simply move the window forward.
 if (empty($preview['funds'])) {
     set_setting($pdo, 'last_completed_at', $nowUtc->format(DateTimeInterface::ATOM));
+    finish_log(
+        $logger,
+        $logId,
+        'success',
+        'No eligible Stripe donations; window advanced.',
+        null
+    );
 
     ob_start();
     ?>
@@ -810,5 +864,14 @@ if (!empty($errors)): ?>
 
 <?php
 $content = ob_get_clean();
+
+$status = empty($errors) ? 'success' : (!empty($createdDeposits) ? 'partial' : 'error');
+$summary = empty($errors)
+    ? (empty($createdDeposits)
+        ? 'Stripe sync: no deposits created; window advanced.'
+        : 'Stripe sync: ' . count($createdDeposits) . ' deposit(s) created or already present.')
+    : 'Stripe sync completed with errors.';
+$details = empty($errors) ? null : implode("\n", $errors);
+finish_log($logger, $logId, $status, $summary, $details);
 
 renderLayout('PCO -> QBO Stripe Sync Result', 'PCO -> QBO Stripe Sync Result', 'Manual run of Stripe donation deposits', $content);

@@ -10,8 +10,14 @@ require_once __DIR__ . '/../src/SyncLogger.php';
 require_once __DIR__ . '/../src/Mailer.php';
 
 $webhookSecretValid = false;
-if (isset($_GET['webhook_secret'], $config['webhook_secret']) && hash_equals($config['webhook_secret'], (string)$_GET['webhook_secret'])) {
-    $webhookSecretValid = true;
+$incomingSecret     = $_GET['webhook_secret'] ?? null;
+if ($incomingSecret !== null && !empty($config['webhook_secrets']) && is_array($config['webhook_secrets'])) {
+    foreach ($config['webhook_secrets'] as $s) {
+        if (!empty($s) && hash_equals((string)$s, (string)$incomingSecret)) {
+            $webhookSecretValid = true;
+            break;
+        }
+    }
 }
 
 if (!$webhookSecretValid) {
