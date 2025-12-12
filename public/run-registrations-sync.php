@@ -42,12 +42,6 @@ function acquire_lock(string $name, int $ttlSeconds = 900): bool
     return true;
 }
 
-if (!acquire_lock('registrations_sync', 900)) {
-    http_response_code(429);
-    echo '<h1>Registrations sync busy</h1><p>Another registrations sync is running. Please try again shortly.</p>';
-    exit;
-}
-
 function map_payment_method_name(?string $raw): ?string
 {
     if ($raw === null) { return null; }
@@ -75,6 +69,42 @@ function set_setting(PDO $pdo, string $key, string $value): void
     $stmt->execute([':key' => $key]);
     $stmt = $pdo->prepare('INSERT INTO sync_settings (setting_key, setting_value) VALUES (:key, :value)');
     $stmt->execute([':key' => $key, ':value' => $value]);
+}
+
+function acquire_db_lock(PDO $pdo, string $name, int $ttlSeconds = 900): ?string
+{
+    $owner = uniqid($name . '_', true);
+    $key   = 'lock_' . $name;
+
+    $stmt = $pdo->prepare('INSERT IGNORE INTO sync_settings (setting_key, setting_value) VALUES (:key, \'\')');
+    $stmt->execute([':key' => $key]);
+
+    $stmt = $pdo->prepare(
+        'UPDATE sync_settings
+            SET setting_value = :owner, updated_at = NOW()
+          WHERE setting_key = :key
+            AND (TIMESTAMPDIFF(SECOND, updated_at, NOW()) > :ttl OR setting_value = \'\' OR setting_value = :owner)'
+    );
+    $stmt->execute([
+        ':owner' => $owner,
+        ':key'   => $key,
+        ':ttl'   => $ttlSeconds,
+    ]);
+
+    if ($stmt->rowCount() === 1) {
+        return $owner;
+    }
+    return null;
+}
+
+function release_db_lock(PDO $pdo, string $name, string $owner): void
+{
+    $key = 'lock_' . $name;
+    $stmt = $pdo->prepare(
+        'UPDATE sync_settings SET setting_value = \'\', updated_at = NOW()
+         WHERE setting_key = :key AND setting_value = :owner'
+    );
+    $stmt->execute([':key' => $key, ':owner' => $owner]);
 }
 
 function has_synced_deposit(PDO $pdo, string $type, string $fingerprint): bool
@@ -125,6 +155,15 @@ function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $lockOwner = acquire_db_lock($pdo, 'registrations_sync', 900);
+    if ($lockOwner === null) {
+        http_response_code(429);
+        echo '<h1>Registrations sync busy</h1><p>Another registrations sync is running. Please try again shortly.</p>';
+        exit;
+    }
+    register_shutdown_function(static function () use ($pdo, $lockOwner) {
+        try { release_db_lock($pdo, 'registrations_sync', $lockOwner); } catch (Throwable $e) { /* ignore */ }
+    });
     $displayTz = get_display_timezone($pdo);
 } catch (Throwable $e) {
     http_response_code(500);

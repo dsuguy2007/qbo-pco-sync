@@ -9,6 +9,7 @@ require_once __DIR__ . '/../src/SyncService.php';
 require_once __DIR__ . '/../src/QboClient.php';
 require_once __DIR__ . '/../src/SyncLogger.php';
 require_once __DIR__ . '/../src/Auth.php';
+require_once __DIR__ . '/../src/Mailer.php';
 
 $webhookSecretValid = false;
 $incomingSecret     = $_GET['webhook_secret'] ?? null;
@@ -25,11 +26,23 @@ if (!$webhookSecretValid) {
     Auth::requireLogin();
 }
 
-// Prevent overlapping runs (webhook or manual)
-if (!acquire_lock('run_sync', 900)) {
-    http_response_code(429);
-    echo '<h1>Sync busy</h1><p>A sync is already running. Please try again in a few minutes.</p>';
-    exit;
+// In-memory lock (legacy); DB-backed lock applied after DB connection is established.
+function acquire_lock(string $name, int $ttlSeconds = 900): bool
+{
+    $lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'qbo_pco_' . $name . '.lock';
+    if (file_exists($lockFile)) {
+        $age = time() - (int)filemtime($lockFile);
+        if ($age < $ttlSeconds) {
+            return false;
+        }
+    }
+    @touch($lockFile);
+    register_shutdown_function(static function () use ($lockFile) {
+        if (file_exists($lockFile)) {
+            @unlink($lockFile);
+        }
+    });
+    return true;
 }
 
 $logger = null;
@@ -62,6 +75,42 @@ function set_setting(PDO $pdo, string $key, string $value): void
         ':key'   => $key,
         ':value' => $value,
     ]);
+}
+
+function acquire_db_lock(PDO $pdo, string $name, int $ttlSeconds = 900): ?string
+{
+    $owner = uniqid($name . '_', true);
+    $key   = 'lock_' . $name;
+
+    $stmt = $pdo->prepare('INSERT IGNORE INTO sync_settings (setting_key, setting_value) VALUES (:key, \'\')');
+    $stmt->execute([':key' => $key]);
+
+    $stmt = $pdo->prepare(
+        'UPDATE sync_settings
+            SET setting_value = :owner, updated_at = NOW()
+          WHERE setting_key = :key
+            AND (TIMESTAMPDIFF(SECOND, updated_at, NOW()) > :ttl OR setting_value = \'\' OR setting_value = :owner)'
+    );
+    $stmt->execute([
+        ':owner' => $owner,
+        ':key'   => $key,
+        ':ttl'   => $ttlSeconds,
+    ]);
+
+    if ($stmt->rowCount() === 1) {
+        return $owner;
+    }
+    return null;
+}
+
+function release_db_lock(PDO $pdo, string $name, string $owner): void
+{
+    $key = 'lock_' . $name;
+    $stmt = $pdo->prepare(
+        'UPDATE sync_settings SET setting_value = \'\', updated_at = NOW()
+         WHERE setting_key = :key AND setting_value = :owner'
+    );
+    $stmt->execute([':key' => $key, ':owner' => $owner]);
 }
 
 /**
@@ -462,6 +511,15 @@ function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $lockOwner = acquire_db_lock($pdo, 'run_sync', 900);
+    if ($lockOwner === null) {
+        http_response_code(429);
+        echo '<h1>Sync busy</h1><p>A sync is already running. Please try again in a few minutes.</p>';
+        exit;
+    }
+    register_shutdown_function(static function () use ($pdo, $lockOwner) {
+        try { release_db_lock($pdo, 'run_sync', $lockOwner); } catch (Throwable $e) { /* ignore */ }
+    });
     $logger = new SyncLogger($pdo);
     $logId  = $logger->start('stripe');
 } catch (Throwable $e) {

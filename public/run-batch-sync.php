@@ -24,12 +24,6 @@ if (!$webhookSecretValid) {
     Auth::requireLogin();
 }
 
-if (!acquire_lock('batch_sync', 900)) {
-    http_response_code(429);
-    echo '<h1>Batch sync busy</h1><p>Another batch sync is running. Please retry in a few minutes.</p>';
-    exit;
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -50,6 +44,42 @@ function acquire_lock(string $name, int $ttlSeconds = 900): bool
         }
     });
     return true;
+}
+
+function acquire_db_lock(PDO $pdo, string $name, int $ttlSeconds = 900): ?string
+{
+    $owner = uniqid($name . '_', true);
+    $key   = 'lock_' . $name;
+
+    $stmt = $pdo->prepare('INSERT IGNORE INTO sync_settings (setting_key, setting_value) VALUES (:key, \'\')');
+    $stmt->execute([':key' => $key]);
+
+    $stmt = $pdo->prepare(
+        'UPDATE sync_settings
+            SET setting_value = :owner, updated_at = NOW()
+          WHERE setting_key = :key
+            AND (TIMESTAMPDIFF(SECOND, updated_at, NOW()) > :ttl OR setting_value = \'\' OR setting_value = :owner)'
+    );
+    $stmt->execute([
+        ':owner' => $owner,
+        ':key'   => $key,
+        ':ttl'   => $ttlSeconds,
+    ]);
+
+    if ($stmt->rowCount() === 1) {
+        return $owner;
+    }
+    return null;
+}
+
+function release_db_lock(PDO $pdo, string $name, string $owner): void
+{
+    $key = 'lock_' . $name;
+    $stmt = $pdo->prepare(
+        'UPDATE sync_settings SET setting_value = \'\', updated_at = NOW()
+         WHERE setting_key = :key AND setting_value = :owner'
+    );
+    $stmt->execute([':key' => $key, ':owner' => $owner]);
 }
 
 function map_payment_method_name(?string $raw): ?string
@@ -544,6 +574,15 @@ function get_batch_donations(array $pcoConfig, string $batchId): array
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $lockOwner = acquire_db_lock($pdo, 'batch_sync', 900);
+    if ($lockOwner === null) {
+        http_response_code(429);
+        echo '<h1>Batch sync busy</h1><p>Another batch sync is running. Please retry in a few minutes.</p>';
+        exit;
+    }
+    register_shutdown_function(static function () use ($pdo, $lockOwner) {
+        try { release_db_lock($pdo, 'batch_sync', $lockOwner); } catch (Throwable $e) { /* ignore */ }
+    });
     $displayTz = get_display_timezone($pdo);
 } catch (Throwable $e) {
     http_response_code(500);
@@ -818,15 +857,17 @@ foreach ($batches as $batchInfo) {
                     'pco_fund_name'  => $fundName,
                     'qbo_class_name' => $className,
                     'gross'          => 0.0,
-                    'payment_methods'=> [],
+                    'method_totals'  => [],
                 ];
             }
 
             $locationGroups[$locKey]['funds'][$fundId]['gross'] += $amount;
             $locationGroups[$locKey]['total_gross']             += $amount;
-            if ($paymentMethod !== '') {
-                $locationGroups[$locKey]['funds'][$fundId]['payment_methods'][$paymentMethod] = true;
+            $pmKey = $paymentMethod !== '' ? $paymentMethod : '(unspecified)';
+            if (!isset($locationGroups[$locKey]['funds'][$fundId]['method_totals'][$pmKey])) {
+                $locationGroups[$locKey]['funds'][$fundId]['method_totals'][$pmKey] = 0.0;
             }
+            $locationGroups[$locKey]['funds'][$fundId]['method_totals'][$pmKey] += $amount;
         }
     }
 
@@ -866,7 +907,7 @@ foreach ($batches as $batchInfo) {
         foreach ($funds as $fundRow) {
             $fundName  = $fundRow['pco_fund_name'];
             $className = $fundRow['qbo_class_name'];
-            $paymentMethods = $fundRow['payment_methods'] ?? [];
+            $methodTotals = $fundRow['method_totals'] ?? [];
 
             $classId = null;
             if ($className !== '') {
@@ -883,32 +924,12 @@ foreach ($batches as $batchInfo) {
                 }
             }
 
-            // Group per payment method for this fund to retain class/location.
-            $methodBuckets = [];
-            if (!empty($paymentMethods)) {
-                foreach (array_keys($paymentMethods) as $pm) {
-                    $methodBuckets[$pm] = $methodBuckets[$pm] ?? 0.0;
-                }
-            }
-            // If no method tracked, treat as single bucket with empty key
-            if (empty($methodBuckets)) {
-                $methodBuckets[''] = 0.0;
+            // Emit one line per payment method with true totals.
+            if (empty($methodTotals)) {
+                $methodTotals = ['(unspecified)' => (float)$fundRow['gross']];
             }
 
-            // Split gross across buckets proportionally (since batch donations are already per method, we can just assign entire gross)
-            // Here we only know total gross per fund; assume evenly distributed if multiple methods present.
-            $grossTotal = round((float)$fundRow['gross'], 2);
-            $bucketCount = count($methodBuckets);
-            $allocated = 0.0;
-            $i = 0;
-            foreach ($methodBuckets as $pm => $_) {
-                $i++;
-                $share = ($i === $bucketCount) ? ($grossTotal - $allocated) : round($grossTotal / $bucketCount, 2);
-                $allocated += $share;
-                $methodBuckets[$pm] = $share;
-            }
-
-            foreach ($methodBuckets as $pmRaw => $gross) {
+            foreach ($methodTotals as $pmRaw => $gross) {
                 if ($gross == 0.0) {
                     continue;
                 }
@@ -926,7 +947,7 @@ foreach ($batches as $batchInfo) {
                 ];
 
                 $pmStats['lines']++;
-                if ($pmRaw !== '') {
+                if ($pmRaw !== '(unspecified)') {
                     $pmName = map_payment_method_name($pmRaw);
                     if ($pmName) {
                         $pmObj = $qbo->getPaymentMethodByName($pmName);
