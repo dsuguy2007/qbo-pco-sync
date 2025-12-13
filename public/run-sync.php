@@ -716,6 +716,7 @@ $errors          = [];
 $createdDeposits = [];
 $createdRefunds  = [];
 $alreadySyncedDonations = 0;
+$alreadySyncedDonations = 0;
 
 $depositBankName      = $config['qbo']['stripe_deposit_bank'] ?? 'TRINITY 2000 CHECKING';
 $weeklyIncomeName     = $config['qbo']['stripe_income_account'] ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
@@ -911,6 +912,7 @@ if (empty($errors)) {
         ];
         foreach ($group['donation_ids'] as $did) {
             mark_synced_item($pdo, 'stripe_donation', (string)$did);
+            $alreadySyncedDonations++;
         }
         continue;
     }
@@ -1177,6 +1179,8 @@ $summaryData = [
     'status'    => $status,
     'deposits'  => count($createdDeposits),
     'refunds'   => count($createdRefunds),
+    'already_synced_donations' => $alreadySyncedDonations,
+    'dry_run'   => $dryRun,
     'window'    => [
         'since' => $preview['since']->format(DateTimeInterface::ATOM),
         'until' => $preview['until']->format(DateTimeInterface::ATOM),

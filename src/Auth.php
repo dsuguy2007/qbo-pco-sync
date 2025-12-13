@@ -6,10 +6,14 @@ class Auth
     public static function startSession(): void
     {
         if (session_status() === PHP_SESSION_NONE) {
+            $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
             session_start([
                 'cookie_httponly' => true,
-                'cookie_secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
-                'cookie_samesite' => 'Lax',
+                'cookie_secure'   => $secure,
+                'cookie_samesite' => 'Strict',
+                'use_strict_mode' => 1,
+                'sid_length'      => 64,
+                'sid_bits_per_character' => 6,
             ]);
         }
     }
