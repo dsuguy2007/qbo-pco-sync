@@ -716,7 +716,6 @@ $errors          = [];
 $createdDeposits = [];
 $createdRefunds  = [];
 $alreadySyncedDonations = 0;
-$alreadySyncedDonations = 0;
 
 $depositBankName      = $config['qbo']['stripe_deposit_bank'] ?? 'TRINITY 2000 CHECKING';
 $weeklyIncomeName     = $config['qbo']['stripe_income_account'] ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
@@ -1173,7 +1172,17 @@ $summary = empty($errors)
         ? 'Stripe sync: no deposits created; window advanced.'
         : 'Stripe sync: ' . count($createdDeposits) . ' deposit(s) created or already present.')
     : 'Stripe sync completed with errors.';
+$detailsLines = [];
+if ($dryRun) {
+    $detailsLines[] = 'Dry run mode: no QBO writes performed.';
+}
+if ($alreadySyncedDonations > 0) {
+    $detailsLines[] = 'Skipped already-synced donations: ' . $alreadySyncedDonations;
+}
 $details = empty($errors) ? null : implode("\n", $errors);
+if (!empty($detailsLines)) {
+    $details = ($details ? $details . "\n" : '') . implode("\n", $detailsLines);
+}
 $summaryData = [
     'ts'        => $nowUtc->format(DateTimeInterface::ATOM),
     'status'    => $status,
