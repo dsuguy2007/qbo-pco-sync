@@ -52,6 +52,14 @@ CREATE TABLE `synced_deposits` (
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE `synced_items` (
+  `id` int NOT NULL,
+  `item_type` varchar(64) NOT NULL,
+  `item_id` varchar(191) NOT NULL,
+  `meta` text,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 CREATE TABLE `sync_logs` (
   `id` int UNSIGNED NOT NULL,
   `sync_type` varchar(32) NOT NULL,
@@ -100,6 +108,10 @@ ALTER TABLE `synced_deposits`
   ADD PRIMARY KEY (`id`),
   ADD UNIQUE KEY `uniq_type_fingerprint` (`type`,`fingerprint`);
 
+ALTER TABLE `synced_items`
+  ADD PRIMARY KEY (`id`),
+  ADD UNIQUE KEY `uniq_type_item` (`item_type`,`item_id`);
+
 ALTER TABLE `sync_logs`
   ADD PRIMARY KEY (`id`);
 
@@ -126,6 +138,8 @@ ALTER TABLE `synced_batches`
 ALTER TABLE `synced_deposits`
   MODIFY `id` int NOT NULL AUTO_INCREMENT;
 
+ALTER TABLE `synced_items`
+  MODIFY `id` int NOT NULL AUTO_INCREMENT;
 ALTER TABLE `sync_logs`
   MODIFY `id` int UNSIGNED NOT NULL AUTO_INCREMENT;
 

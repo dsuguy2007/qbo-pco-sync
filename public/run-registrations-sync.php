@@ -55,6 +55,84 @@ function map_payment_method_name(?string $raw): ?string
     return null;
 }
 
+function get_synced_items(PDO $pdo, string $type): array
+{
+    $stmt = $pdo->prepare('SELECT item_id FROM synced_items WHERE item_type = :t');
+    $stmt->execute([':t' => $type]);
+    $ids = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $ids[] = (string)$row['item_id'];
+    }
+    return $ids;
+}
+
+function mark_synced_item(PDO $pdo, string $type, string $itemId, array $meta = []): void
+{
+    $stmt = $pdo->prepare(
+        'INSERT INTO synced_items (item_type, item_id, meta, created_at) VALUES (:t, :id, :meta, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE meta = VALUES(meta)'
+    );
+    $stmt->execute([
+        ':t'    => $type,
+        ':id'   => $itemId,
+        ':meta' => empty($meta) ? null : json_encode($meta),
+    ]);
+}
+
+function build_synced_refund_map(PDO $pdo): array
+{
+    $map = [];
+
+    try {
+        $stmt = $pdo->prepare('SELECT item_id FROM synced_items WHERE item_type = :t');
+        $stmt->execute([':t' => 'registration_refund']);
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $item = (string)($row['item_id'] ?? '');
+            if (preg_match('/^reg_refund\\|(\\d+)\\|(\\d+)$/', $item, $m)) {
+                $regId = $m[1];
+                $cents = (int)$m[2];
+                $map[$regId] = max($map[$regId] ?? 0, $cents);
+            }
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+
+    try {
+        $stmt = $pdo->prepare("SELECT fingerprint FROM synced_deposits WHERE type = 'registrations_refund'");
+        $stmt->execute();
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $fp = (string)($row['fingerprint'] ?? '');
+            if (preg_match('/^reg_refund\\|(\\d+)\\|(\\d+)$/', $fp, $m)) {
+                $regId = $m[1];
+                $cents = (int)$m[2];
+                $map[$regId] = max($map[$regId] ?? 0, $cents);
+            }
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+
+    try {
+        $stmt = $pdo->prepare("SELECT setting_key, setting_value FROM sync_settings WHERE setting_key LIKE 'reg_refunded_cents_%'");
+        $stmt->execute();
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $key = (string)($row['setting_key'] ?? '');
+            $val = (int)($row['setting_value'] ?? 0);
+            if (strpos($key, 'reg_refunded_cents_') === 0) {
+                $regId = substr($key, strlen('reg_refunded_cents_'));
+                if ($regId !== '') {
+                    $map[$regId] = max($map[$regId] ?? 0, $val);
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+
+    return $map;
+}
+
 function get_setting(PDO $pdo, string $key): ?string
 {
     $stmt = $pdo->prepare('SELECT setting_value FROM sync_settings WHERE setting_key = :key ORDER BY id DESC LIMIT 1');
@@ -128,31 +206,6 @@ function mark_synced_deposit(PDO $pdo, string $type, string $fingerprint): void
     ]);
 }
 
-function last_refund_total_cents(PDO $pdo, string $regId): int
-{
-    try {
-        $stmt = $pdo->prepare('SELECT fingerprint FROM synced_deposits WHERE type = :t AND fingerprint LIKE :fp');
-        $stmt->execute([
-            ':t'  => 'registrations_refund',
-            ':fp' => 'reg_refund|' . $regId . '|%',
-        ]);
-        $max = 0;
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $fp = $row['fingerprint'] ?? '';
-            $parts = explode('|', $fp);
-            if (count($parts) === 3) {
-                $amt = (int)$parts[2];
-                if ($amt > $max) {
-                    $max = $amt;
-                }
-            }
-        }
-        return $max;
-    } catch (Throwable $e) {
-        return 0;
-    }
-}
-
 function get_display_timezone(PDO $pdo): DateTimeZone
 {
     $tz = null;
@@ -210,6 +263,8 @@ try {
         try { release_db_lock($pdo, 'registrations_sync', $lockOwner); } catch (Throwable $e) { /* ignore */ }
     });
     $displayTz = get_display_timezone($pdo);
+    $syncedPayments = get_synced_items($pdo, 'registration_payment');
+    $syncedRefundMap = build_synced_refund_map($pdo);
 } catch (Throwable $e) {
     http_response_code(500);
     echo '<h1>Database error</h1>';
@@ -384,6 +439,10 @@ foreach ($payments as $pay) {
     if ($occurredAtDt < $sinceUtc || $occurredAtDt > $nowUtc) { continue; }
 
     $id     = (string)($pay['id'] ?? '');
+    if ($id !== '' && in_array($id, $syncedPayments ?? [], true)) {
+        continue;
+    }
+
     $gross  = ((int)($attrs['amount_cents'] ?? 0)) / 100.0;
     $fee    = ((int)($attrs['stripe_fee_cents'] ?? 0)) / 100.0;
     $net    = $gross - $fee;
@@ -503,8 +562,8 @@ foreach ($registrationLookup as $regId => $regAttrs) {
     $regId = (string)$regId;
     $currentRefundCents = parse_money_to_cents($regAttrs['total_refunds'] ?? ($regAttrs['total_refunds_cents'] ?? 0));
     $prevRefundCentsSetting = (int)(get_setting($pdo, 'reg_refunded_cents_' . $regId) ?? 0);
-    $prevRefundCentsFingerprint = last_refund_total_cents($pdo, $regId);
-    $prevRefundCents    = $forceRefunds ? 0 : max($prevRefundCentsSetting, $prevRefundCentsFingerprint);
+    $prevRefundCentsSynced  = $syncedRefundMap[$regId] ?? 0;
+    $prevRefundCents    = $forceRefunds ? 0 : max($prevRefundCentsSetting, $prevRefundCentsSynced);
     $deltaCents         = $currentRefundCents - $prevRefundCents;
     if ($deltaCents <= 0) {
         continue;
@@ -557,6 +616,14 @@ foreach ($registrationLookup as $regId => $regAttrs) {
         $resp = $qbo->createPurchase($purchase);
         mark_synced_deposit($pdo, 'registrations_refund', $fingerprint);
         set_setting($pdo, 'reg_refunded_cents_' . $regId, (string)$currentRefundCents);
+        try {
+            mark_synced_item($pdo, 'registration_refund', $fingerprint, [
+                'amount_cents' => $currentRefundCents,
+            ]);
+            $syncedRefundMap[$regId] = max($syncedRefundMap[$regId] ?? 0, $currentRefundCents);
+        } catch (Throwable $e) {
+            $errors[] = 'Error marking refund for registration ' . $regId . ' synced: ' . $e->getMessage();
+        }
         $refundsCreated++;
         $refundTotal += $deltaAmount;
         $refundCreatedIds[] = $regId;
@@ -614,6 +681,19 @@ if (!empty($lines)) {
         }
     } catch (Throwable $e) {
         $errors[] = $e->getMessage();
+    }
+
+    if (!empty($processedIds) && ($depositAlreadySynced || $depositResult !== null)) {
+        foreach ($processedIds as $pid) {
+            try {
+                mark_synced_item($pdo, 'registration_payment', (string)$pid, [
+                    'window_since' => $sinceUtc->format(DateTimeInterface::ATOM),
+                    'window_until' => $nowUtc->format(DateTimeInterface::ATOM),
+                ]);
+            } catch (Throwable $e) {
+                $errors[] = 'Error marking registration payment ' . $pid . ' synced: ' . $e->getMessage();
+            }
+        }
     }
 }
 $status = empty($errors) ? 'success' : 'error';

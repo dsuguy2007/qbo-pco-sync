@@ -48,6 +48,30 @@ function acquire_lock(string $name, int $ttlSeconds = 900): bool
 $logger = null;
 $logId  = null;
 
+function get_synced_items(PDO $pdo, string $type): array
+{
+    $stmt = $pdo->prepare('SELECT item_id FROM synced_items WHERE item_type = :t');
+    $stmt->execute([':t' => $type]);
+    $ids = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $ids[] = (string)$row['item_id'];
+    }
+    return $ids;
+}
+
+function mark_synced_item(PDO $pdo, string $type, string $itemId, array $meta = []): void
+{
+    $stmt = $pdo->prepare(
+        'INSERT INTO synced_items (item_type, item_id, meta, created_at) VALUES (:t, :id, :meta, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE meta = VALUES(meta)'
+    );
+    $stmt->execute([
+        ':t'   => $type,
+        ':id'  => $itemId,
+        ':meta'=> empty($meta) ? null : json_encode($meta),
+    ]);
+}
+
 /**
  * Get a setting from sync_settings.
  */
@@ -463,27 +487,6 @@ function renderLayout(string $title, string $heroTitle, string $lede, string $co
 }
 
 /**
- * Try to acquire a simple file lock to avoid overlapping runs.
- */
-function acquire_lock(string $name, int $ttlSeconds = 900): bool
-{
-    $lockFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'qbo_pco_' . $name . '.lock';
-    if (file_exists($lockFile)) {
-        $age = time() - (int)filemtime($lockFile);
-        if ($age < $ttlSeconds) {
-            return false;
-        }
-    }
-    @touch($lockFile);
-    register_shutdown_function(static function () use ($lockFile) {
-        if (file_exists($lockFile)) {
-            @unlink($lockFile);
-        }
-    });
-    return true;
-}
-
-/**
  * Map raw payment method to the QBO PaymentMethod name.
  */
 function map_payment_method_name(?string $raw): ?string
@@ -537,6 +540,8 @@ function fmt_dt(DateTimeInterface $dt, DateTimeZone $tz): string
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $syncedStripeDonations = get_synced_items($pdo, 'stripe_donation');
+    $syncedStripeRefunds   = get_synced_items($pdo, 'stripe_refund');
     $lockOwner = acquire_db_lock($pdo, 'run_sync', 900);
     if ($lockOwner === null) {
         http_response_code(429);
@@ -658,8 +663,8 @@ if ($sinceUtc >= $nowUtc) {
 // --- Build preview of what we would deposit ---------------------------------
 
 try {
-    $preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
-    $refundPreview = $service->buildRefundPreview($sinceUtc, $nowUtc);
+    $preview = $service->buildDepositPreview($sinceUtc, $nowUtc, $syncedStripeDonations);
+    $refundPreview = $service->buildRefundPreview($sinceUtc, $nowUtc, $syncedStripeRefunds);
 } catch (Throwable $e) {
     finish_log(
         $logger,
@@ -746,17 +751,18 @@ $locationGroups = [];
 
 foreach ($preview['funds'] as $row) {
     $locName = trim((string)($row['qbo_location_name'] ?? ''));
-    $locKey  = $locName !== '' ? $locName : '__NO_LOCATION__';
+            $locKey  = $locName !== '' ? $locName : '__NO_LOCATION__';
 
-    if (!isset($locationGroups[$locKey])) {
-        $locationGroups[$locKey] = [
-            'location_name' => $locName,
-            'funds'         => [],
-            'total_gross'   => 0.0,
-            'total_fee'     => 0.0,
-            'total_net'     => 0.0,
-        ];
-    }
+            if (!isset($locationGroups[$locKey])) {
+                $locationGroups[$locKey] = [
+                    'location_name' => $locName,
+                    'funds'         => [],
+                    'total_gross'   => 0.0,
+                    'total_fee'     => 0.0,
+                    'total_net'     => 0.0,
+                    'donation_ids'  => $preview['donation_ids_by_location'][$locKey] ?? [],
+                ];
+            }
 
     $locationGroups[$locKey]['funds'][]      = $row;
     $locationGroups[$locKey]['total_gross'] += (float)$row['gross'];
@@ -890,29 +896,36 @@ if (empty($errors)) {
             $deposit['DepartmentRef'] = $deptRef;
         }
 
-        $fingerprint = build_stripe_deposit_fingerprint($deposit, (string)$locKey);
-        if (has_synced_stripe_deposit($pdo, $fingerprint)) {
-            $createdDeposits[] = [
-                'location_name' => $locName,
-                'total_gross'   => $group['total_gross'],
-                'total_fee'     => $group['total_fee'],
-                'total_net'     => $group['total_net'],
-                'deposit'       => null,
-                'skipped'       => true,
-            ];
-            continue;
+    $fingerprint = build_stripe_deposit_fingerprint($deposit, (string)$locKey);
+    if (has_synced_stripe_deposit($pdo, $fingerprint)) {
+        $createdDeposits[] = [
+            'location_name' => $locName,
+            'total_gross'   => $group['total_gross'],
+            'total_fee'     => $group['total_fee'],
+            'total_net'     => $group['total_net'],
+            'deposit'       => null,
+            'skipped'       => true,
+        ];
+        // Ensure items are marked so previews skip them next time.
+        foreach ($group['donation_ids'] as $did) {
+            mark_synced_item($pdo, 'stripe_donation', (string)$did);
+        }
+        continue;
+    }
+
+    try {
+        $resp = $qbo->createDeposit($deposit);
+        $dep  = $resp['Deposit'] ?? null;
+
+        mark_synced_stripe_deposit($pdo, $fingerprint);
+        foreach ($group['donation_ids'] as $did) {
+            mark_synced_item($pdo, 'stripe_donation', (string)$did);
         }
 
-        try {
-            $resp = $qbo->createDeposit($deposit);
-            $dep  = $resp['Deposit'] ?? null;
-
-            mark_synced_stripe_deposit($pdo, $fingerprint);
-
-            $createdDeposits[] = [
-                'location_name' => $locName,
-                'total_gross'   => $group['total_gross'],
-                'total_fee'     => $group['total_fee'],
+        $createdDeposits[] = [
+            'location_name' => $locName,
+            'total_gross'   => $group['total_gross'],
+            'total_fee'     => $group['total_fee'],
                 'total_net'     => $group['total_net'],
                 'deposit'       => $dep,
                 'skipped'       => false,
@@ -936,6 +949,7 @@ if (empty($errors) && !empty($refundPreview['refunds'])) {
             continue;
         }
         if (has_synced_stripe_refund($pdo, $donationId)) {
+            mark_synced_item($pdo, 'stripe_refund', (string)$donationId);
             continue;
         }
 
@@ -1005,6 +1019,7 @@ if (empty($errors) && !empty($refundPreview['refunds'])) {
             $resp = $qbo->createPurchase($purchase);
             $createdRefunds[] = $resp['Purchase'] ?? $resp;
             mark_synced_stripe_refund($pdo, $donationId);
+            mark_synced_item($pdo, 'stripe_refund', (string)$donationId);
         } catch (Throwable $e) {
             $errors[] = 'Error creating refund expense for donation ' . $donationId . ': ' . $e->getMessage();
         }

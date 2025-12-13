@@ -12,6 +12,17 @@ Auth::requireLogin();
 // Helpers
 // ---------------------------------------------------------------------------
 
+function get_synced_items(PDO $pdo, string $type): array
+{
+    $stmt = $pdo->prepare('SELECT item_id FROM synced_items WHERE item_type = :t');
+    $stmt->execute([':t' => $type]);
+    $ids = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $ids[] = (string)$row['item_id'];
+    }
+    return $ids;
+}
+
 function get_display_timezone(PDO $pdo): DateTimeZone
 {
     $tz = null;
@@ -440,6 +451,7 @@ try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
     $displayTz = get_display_timezone($pdo);
+    $syncedBatchDonations = get_synced_items($pdo, 'batch_donation');
 } catch (Throwable $e) {
     http_response_code(500);
     echo '<h1>Database error</h1>';
@@ -520,6 +532,10 @@ foreach ($batches as $batch) {
 
     foreach ($donations as $donation) {
         $donationsEvaluated++;
+        $donationId = (string)($donation['id'] ?? '');
+        if ($donationId !== '' && in_array($donationId, $syncedBatchDonations, true)) {
+            continue;
+        }
         foreach ($donation['designations'] as $des) {
             $fundId = (string)($des['fund_id'] ?? '');
             $amount = ((int)($des['amount_cents'] ?? 0)) / 100.0;
@@ -539,11 +555,15 @@ foreach ($batches as $batch) {
                     'qbo_class_name'   => $className,
                     'qbo_location_name'=> $locName,
                     'gross'            => 0.0,
+                    'batch_ids'        => [],
                 ];
             }
 
             $fundTotals[$fundId]['gross'] += $amount;
             $grossTotal                   += $amount;
+            if (!in_array($batchId, $fundTotals[$fundId]['batch_ids'], true)) {
+                $fundTotals[$fundId]['batch_ids'][] = $batchId;
+            }
 
             if (empty($mapping)) {
                 $unmappedFunds[$fundId] = [
@@ -618,6 +638,7 @@ ob_start();
                     <th>PCO Fund</th>
                     <th>QBO Class</th>
                     <th>QBO Location</th>
+                    <th>Batch ID(s)</th>
                     <th>Gross</th>
                 </tr>
                 </thead>
@@ -630,13 +651,14 @@ ob_start();
                         </td>
                         <td><?= htmlspecialchars((string)$row['qbo_class_name'], ENT_QUOTES, 'UTF-8') ?></td>
                         <td><?= htmlspecialchars((string)$row['qbo_location_name'], ENT_QUOTES, 'UTF-8') ?></td>
+                        <td><?= htmlspecialchars(implode(', ', $row['batch_ids'] ?? []), ENT_QUOTES, 'UTF-8') ?></td>
                         <td>$<?= number_format($row['gross'], 2) ?></td>
                     </tr>
                 <?php endforeach; ?>
                 </tbody>
                 <tfoot>
                 <tr>
-                    <th colspan="3">Totals</th>
+                    <th colspan="4">Totals</th>
                     <th>$<?= number_format($grossTotal, 2) ?></th>
                 </tr>
                 </tfoot>

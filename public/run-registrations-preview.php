@@ -18,6 +18,71 @@ $feeTotal   = 0.0;
 $refundsPreview = [];
 $refundTotal = 0.0;
 
+function get_synced_items(PDO $pdo, string $type): array
+{
+    $stmt = $pdo->prepare('SELECT item_id FROM synced_items WHERE item_type = :t');
+    $stmt->execute([':t' => $type]);
+    $ids = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $ids[] = (string)$row['item_id'];
+    }
+    return $ids;
+}
+
+function build_synced_refund_map(PDO $pdo): array
+{
+    $map = [];
+
+    try {
+        $stmt = $pdo->prepare('SELECT item_id FROM synced_items WHERE item_type = :t');
+        $stmt->execute([':t' => 'registration_refund']);
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $item = (string)($row['item_id'] ?? '');
+            if (preg_match('/^reg_refund\\|(\\d+)\\|(\\d+)$/', $item, $m)) {
+                $regId = $m[1];
+                $cents = (int)$m[2];
+                $map[$regId] = max($map[$regId] ?? 0, $cents);
+            }
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+
+    try {
+        $stmt = $pdo->prepare("SELECT fingerprint FROM synced_deposits WHERE type = 'registrations_refund'");
+        $stmt->execute();
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $fp = (string)($row['fingerprint'] ?? '');
+            if (preg_match('/^reg_refund\\|(\\d+)\\|(\\d+)$/', $fp, $m)) {
+                $regId = $m[1];
+                $cents = (int)$m[2];
+                $map[$regId] = max($map[$regId] ?? 0, $cents);
+            }
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+
+    try {
+        $stmt = $pdo->prepare("SELECT setting_key, setting_value FROM sync_settings WHERE setting_key LIKE 'reg_refunded_cents_%'");
+        $stmt->execute();
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $key = (string)($row['setting_key'] ?? '');
+            $val = (int)($row['setting_value'] ?? 0);
+            if (strpos($key, 'reg_refunded_cents_') === 0) {
+                $regId = substr($key, strlen('reg_refunded_cents_'));
+                if ($regId !== '') {
+                    $map[$regId] = max($map[$regId] ?? 0, $val);
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+
+    return $map;
+}
+
 function get_display_timezone(PDO $pdo): DateTimeZone
 {
     $tz = null;
@@ -96,6 +161,8 @@ try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
     $displayTz = get_display_timezone($pdo);
+    $syncedPayments = get_synced_items($pdo, 'registration_payment');
+    $syncedRefundMap = build_synced_refund_map($pdo);
 } catch (Throwable $e) {
     http_response_code(500);
     echo '<h1>Database error</h1>';
@@ -156,6 +223,11 @@ try {
             continue;
         }
 
+        $id = (string)($pay['id'] ?? '');
+        if ($id !== '' && in_array($id, $syncedPayments ?? [], true)) {
+            continue;
+        }
+
         $donationsEvaluated++;
         $grossCents = (int)($attrs['amount_cents'] ?? 0);
         $feeCents   = (int)($attrs['stripe_fee_cents'] ?? 0);
@@ -211,20 +283,8 @@ try {
 
     foreach ($registrationLookup as $regId => $attrs) {
         $currentRefundCents = parse_money_to_cents($attrs['total_refunds'] ?? ($attrs['total_refunds_cents'] ?? 0));
-        // Always show the full current refund amount in preview (do not subtract prior runs).
-        $prevRefundCents = 0;
+        $prevRefundCents = $syncedRefundMap[$regId] ?? 0;
         $deltaCents = $currentRefundCents - $prevRefundCents;
-        $refundDebug[] = [
-            'reg_id' => (string)$regId,
-            'current' => $currentRefundCents,
-            'prev_setting' => 0,
-            'prev_fingerprint' => 0,
-            'delta' => $deltaCents,
-            'raw_total_refunds' => $attrs['total_refunds'] ?? null,
-            'raw_total_refunds_cents' => $attrs['total_refunds_cents'] ?? null,
-            'attr_keys' => implode(',', array_keys($attrs)),
-            'raw_dump' => json_encode($registrationRaw[$regId] ?? []),
-        ];
         if ($deltaCents <= 0) {
             continue;
         }

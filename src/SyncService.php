@@ -15,32 +15,23 @@ class SyncService
     }
 
     /**
-     * Build a preview of what a QBO Deposit would look like for Stripe
-     * donations completed in [ $sinceUtc, $untilUtc ].
-     *
-     * "Stripe donations" here are:
-     *  - payment_method in ['card','ach']
-     *  - payment_status == 'succeeded'
-     *  - completed_at non-null and within the window
-     *
-     * For each fund we produce:
-     *  - total gross
-     *  - total Stripe fee (positive number)
-     *  - net (gross - fee)
+     * Build a preview of Stripe donations to deposit, optionally skipping donation IDs.
+     * Returns fund aggregates plus donation IDs grouped by location.
      */
-    public function buildDepositPreview(DateTimeImmutable $sinceUtc, ?DateTimeImmutable $untilUtc = null): array
+    public function buildDepositPreview(DateTimeImmutable $sinceUtc, ?DateTimeImmutable $untilUtc = null, array $skipDonationIds = []): array
     {
         $fundMappings = $this->loadFundMappings(); // [fund_id => row]
         $nowUtc       = $untilUtc ?? new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $skipSet      = array_fill_keys($skipDonationIds, true);
+        $donationIdsByLocation = [];
 
-        // Fetch up to 100 newest donations, ordered by completed_at
         $resp = $this->pco->listDonations([
             'per_page' => 100,
             'order'    => '-completed_at',
             'include'  => 'designations',
         ]);
 
-        $fundTotals         = []; // [fund_id => aggregate]
+        $fundTotals         = []; // keyed by fund_id
         $donationCount      = 0;
         $processedDonations = 0;
         $skippedOffline     = 0;
@@ -70,27 +61,24 @@ class SyncService
                 'processed_donations' => 0,
                 'skipped_offline'     => 0,
                 'skipped_unmapped'    => $skippedUnmapped,
+                'donation_ids_by_location' => [],
             ];
         }
 
         foreach ($resp['data'] as $donation) {
-            $id    = $donation['id'] ?? '??';
+            $id    = (string)($donation['id'] ?? '');
             $attrs = $donation['attributes'] ?? [];
             $rels  = $donation['relationships'] ?? [];
 
             $completedAtStr = $attrs['completed_at'] ?? null;
             if (!$completedAtStr) {
-                // Not yet paid out by Stripe
                 continue;
             }
-
             try {
                 $completedAt = new DateTimeImmutable($completedAtStr);
             } catch (Throwable $e) {
                 continue;
             }
-
-            // Only donations whose completed_at falls in our window
             if ($completedAt < $sinceUtc || $completedAt > $nowUtc) {
                 continue;
             }
@@ -98,9 +86,10 @@ class SyncService
             $paymentStatus = strtolower((string)($attrs['payment_status'] ?? ''));
             $paymentMethod = strtolower((string)($attrs['payment_method'] ?? ''));
             $refunded      = (bool)($attrs['refunded'] ?? false);
-
-            // Only succeeded, non-refunded online donations
             if ($paymentStatus !== 'succeeded' || $refunded) {
+                continue;
+            }
+            if (isset($skipSet[$id])) {
                 continue;
             }
 
@@ -112,25 +101,21 @@ class SyncService
 
             $donationCount++;
 
-            $donationAmountCents = (int)($attrs['amount_cents'] ?? 0);
-            $feeCentsRaw         = (int)($attrs['fee_cents'] ?? 0);
-            $feeCentsAbs         = abs($feeCentsRaw);
+            $feeCentsAbs = abs((int)($attrs['fee_cents'] ?? 0));
 
-            // Collect designations: fund_id + amount_cents
             $designationRefs = $rels['designations']['data'] ?? [];
             if (empty($designationRefs) || !is_array($designationRefs)) {
                 $skippedUnmapped[] = [
                     'donation_id'   => $id,
                     'reason'        => 'No designations',
-                    'amount_cents'  => $donationAmountCents,
+                    'amount_cents'  => (int)($attrs['amount_cents'] ?? 0),
                     'payment_method'=> $paymentMethod,
                 ];
                 continue;
             }
 
-            $designationDetails     = [];
+            $designationDetails = [];
             $designationTotalCents = 0;
-
             foreach ($designationRefs as $desRef) {
                 $dtype = $desRef['type'] ?? '';
                 $did   = $desRef['id']   ?? '';
@@ -138,25 +123,18 @@ class SyncService
                 if (!isset($includedByKey[$key])) {
                     continue;
                 }
-
-                $des      = $includedByKey[$key];
+                $des = $includedByKey[$key];
                 $desAttrs = $des['attributes'] ?? [];
                 $desAmt   = (int)($desAttrs['amount_cents'] ?? 0);
-
-                $desFundId = null;
-                if (!empty($des['relationships']['fund']['data']['id'])) {
-                    $desFundId = (string)$des['relationships']['fund']['data']['id'];
-                }
-
+                $desFundId = $des['relationships']['fund']['data']['id'] ?? null;
                 if ($desFundId === null || $desAmt === 0) {
                     continue;
                 }
-
+                $desFundId = (string)$desFundId;
                 $designationDetails[] = [
                     'fund_id'      => $desFundId,
                     'amount_cents' => $desAmt,
                 ];
-
                 $designationTotalCents += $desAmt;
             }
 
@@ -164,7 +142,7 @@ class SyncService
                 $skippedUnmapped[] = [
                     'donation_id'   => $id,
                     'reason'        => 'Designations total zero or missing',
-                    'amount_cents'  => $donationAmountCents,
+                    'amount_cents'  => (int)($attrs['amount_cents'] ?? 0),
                     'payment_method'=> $paymentMethod,
                 ];
                 continue;
@@ -172,7 +150,6 @@ class SyncService
 
             $processedDonations++;
 
-            // Split fee across designations proportionally
             $remainingFeeCents = $feeCentsAbs;
             $desCount          = count($designationDetails);
 
@@ -184,11 +161,9 @@ class SyncService
                     continue;
                 }
 
-                // Determine fee share for this fund
                 $feeShareCents = 0;
                 if ($feeCentsAbs > 0) {
                     if ($idx === $desCount - 1) {
-                        // Last designation gets the remainder
                         $feeShareCents = $remainingFeeCents;
                     } else {
                         $ratio         = $gross / $designationTotalCents;
@@ -197,7 +172,6 @@ class SyncService
                     }
                 }
 
-                // Check fund mapping
                 if (!isset($fundMappings[$fundId])) {
                     $skippedUnmapped[] = [
                         'donation_id'   => $id,
@@ -229,15 +203,20 @@ class SyncService
                 if ($paymentMethod !== '') {
                     $fundTotals[$key]['payment_methods'][$paymentMethod] = true;
                 }
+
+                $locKey = $map['qbo_location_name'] ?? '__NO_LOCATION__';
+                if (!isset($donationIdsByLocation[$locKey])) {
+                    $donationIdsByLocation[$locKey] = [];
+                }
+                $donationIdsByLocation[$locKey][$id] = true;
             }
         }
 
-        // Convert cents to dollars
         $totalGrossCents = 0;
         $totalFeeCents   = 0;
 
         $fundsOut = [];
-        foreach ($fundTotals as $fundId => $row) {
+        foreach ($fundTotals as $row) {
             $grossCents = (int)$row['gross_cents'];
             $feeCents   = (int)$row['fee_cents'];
             $netCents   = $grossCents - $feeCents;
@@ -272,16 +251,18 @@ class SyncService
             'processed_donations' => $processedDonations,
             'skipped_offline'     => $skippedOffline,
             'skipped_unmapped'    => $skippedUnmapped,
+            'donation_ids_by_location' => array_map('array_keys', $donationIdsByLocation),
         ];
     }
 
     /**
      * Build a list of refunded Stripe donations updated within the window.
      */
-    public function buildRefundPreview(DateTimeImmutable $sinceUtc, ?DateTimeImmutable $untilUtc = null): array
+    public function buildRefundPreview(DateTimeImmutable $sinceUtc, ?DateTimeImmutable $untilUtc = null, array $skipRefundIds = []): array
     {
         $fundMappings = $this->loadFundMappings();
         $nowUtc       = $untilUtc ?? new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $skipSet      = array_fill_keys($skipRefundIds, true);
 
         $resp = $this->pco->listDonations([
             'per_page' => 100,
@@ -309,7 +290,7 @@ class SyncService
             $attrs = $donation['attributes'] ?? [];
             $rels  = $donation['relationships'] ?? [];
 
-            $updatedAtStr = $attrs['updated_at'] ?? null;
+            $updatedAtStr   = $attrs['updated_at'] ?? null;
             $completedAtStr = $attrs['completed_at'] ?? null;
             if (!$updatedAtStr || !$completedAtStr) {
                 continue;
@@ -328,6 +309,9 @@ class SyncService
             $refunded = (bool)($attrs['refunded'] ?? false);
             $paymentStatus = strtolower((string)($attrs['payment_status'] ?? ''));
             if (!$refunded || $paymentStatus !== 'succeeded') {
+                continue;
+            }
+            if (isset($skipSet[$id])) {
                 continue;
             }
 
@@ -384,6 +368,7 @@ class SyncService
             'refunds'          => $refunds,
             'total_refund'     => $totalRefundCents / 100.0,
             'skipped_unmapped' => $skippedUnmapped,
+            'refund_ids'       => array_column($refunds, 'donation_id'),
         ];
     }
 

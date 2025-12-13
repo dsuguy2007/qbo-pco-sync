@@ -8,6 +8,31 @@ require_once __DIR__ . '/../src/QboClient.php';
 require_once __DIR__ . '/../src/Auth.php';
 require_once __DIR__ . '/../src/SyncLogger.php';
 require_once __DIR__ . '/../src/Mailer.php';
+require_once __DIR__ . '/../src/PcoClient.php';
+
+function get_synced_items(PDO $pdo, string $type): array
+{
+    $stmt = $pdo->prepare('SELECT item_id FROM synced_items WHERE item_type = :t');
+    $stmt->execute([':t' => $type]);
+    $ids = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $ids[] = (string)$row['item_id'];
+    }
+    return $ids;
+}
+
+function mark_synced_item(PDO $pdo, string $type, string $itemId, array $meta = []): void
+{
+    $stmt = $pdo->prepare(
+        'INSERT INTO synced_items (item_type, item_id, meta, created_at) VALUES (:t, :id, :meta, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE meta = VALUES(meta)'
+    );
+    $stmt->execute([
+        ':t'   => $type,
+        ':id'  => $itemId,
+        ':meta'=> empty($meta) ? null : json_encode($meta),
+    ]);
+}
 
 $webhookSecretValid = false;
 $incomingSecret     = $_GET['webhook_secret'] ?? null;
@@ -576,6 +601,7 @@ function get_batch_donations(array $pcoConfig, string $batchId): array
 try {
     $db  = Db::getInstance($config['db']);
     $pdo = $db->getConnection();
+    $syncedBatchDonations = get_synced_items($pdo, 'batch_donation');
     $lockOwner = acquire_db_lock($pdo, 'batch_sync', 900);
     if ($lockOwner === null) {
         http_response_code(429);
@@ -791,21 +817,6 @@ foreach ($batches as $batchInfo) {
     $batchName   = $batchInfo['name'];
     $committedAt = $batchInfo['committed_at'];
 
-    try {
-        if (has_synced_batch($pdo, $batchId)) {
-            $batchSummaries[] = [
-                'batch_id'  => $batchId,
-                'committed' => $committedAt instanceof DateTimeInterface ? $committedAt->format(DateTimeInterface::ATOM) : null,
-                'status'    => 'skipped',
-                'reason'    => 'already synced',
-                'deposits'  => [],
-            ];
-            continue;
-        }
-    } catch (Throwable $e) {
-        $errors[] = 'Error checking sync state for batch ' . $batchId . ': ' . $e->getMessage();
-    }
-
     $locationGroups = [];
 
     try {
@@ -815,10 +826,44 @@ foreach ($batches as $batchInfo) {
         continue;
     }
 
+    $batchAlreadySynced = false;
+    try {
+        $batchAlreadySynced = has_synced_batch($pdo, $batchId);
+    } catch (Throwable $e) {
+        $errors[] = 'Error checking sync state for batch ' . $batchId . ': ' . $e->getMessage();
+    }
+
+    if ($batchAlreadySynced) {
+        foreach ($donations as $donation) {
+            $donationId = (string)($donation['id'] ?? '');
+            if ($donationId === '') {
+                continue;
+            }
+            try {
+                mark_synced_item($pdo, 'batch_donation', $donationId, ['batch_id' => $batchId]);
+            } catch (Throwable $e) {
+                $errors[] = 'Error marking batch donation ' . $donationId . ' synced: ' . $e->getMessage();
+            }
+        }
+        $batchSummaries[] = [
+            'batch_id'  => $batchId,
+            'committed' => $committedAt instanceof DateTimeInterface ? $committedAt->format(DateTimeInterface::ATOM) : null,
+            'status'    => 'skipped',
+            'reason'    => 'already synced',
+            'deposits'  => [],
+        ];
+        continue;
+    }
+
     foreach ($donations as $donation) {
         $totalDonations++;
+        $donationId = (string)($donation['id'] ?? '');
+        if ($donationId !== '' && in_array($donationId, $syncedBatchDonations ?? [], true)) {
+            continue;
+        }
         $designations    = $donation['designations'] ?? [];
         $paymentMethod   = $donation['payment_method'] ?? '';
+        $locKeysUsed     = [];
 
         foreach ($designations as $des) {
             $fundId      = (string)($des['fund_id'] ?? '');
@@ -841,6 +886,7 @@ foreach ($batches as $batchInfo) {
             );
 
             $locKey = $locName !== '' ? $locName : '__NO_LOCATION__';
+            $locKeysUsed[$locKey] = true;
 
             if (!isset($locationGroups[$locKey])) {
                 $locationGroups[$locKey] = [
@@ -850,6 +896,7 @@ foreach ($batches as $batchInfo) {
                     'location_name' => $locName,
                     'funds'         => [],
                     'total_gross'   => 0.0,
+                    'donation_ids'  => [],
                 ];
             }
 
@@ -870,6 +917,14 @@ foreach ($batches as $batchInfo) {
                 $locationGroups[$locKey]['funds'][$fundId]['method_totals'][$pmKey] = 0.0;
             }
             $locationGroups[$locKey]['funds'][$fundId]['method_totals'][$pmKey] += $amount;
+        }
+
+        if ($donationId !== '' && !empty($locKeysUsed)) {
+            foreach (array_keys($locKeysUsed) as $lk) {
+                if (!in_array($donationId, $locationGroups[$lk]['donation_ids'], true)) {
+                    $locationGroups[$lk]['donation_ids'][] = $donationId;
+                }
+            }
         }
     }
 
@@ -1021,6 +1076,17 @@ foreach ($batches as $batchInfo) {
                 'total_gross'   => $group['total_gross'],
                 'deposit'       => $dep,
             ];
+
+            $donationIdsForGroup = $group['donation_ids'] ?? [];
+            if (!empty($donationIdsForGroup)) {
+                foreach ($donationIdsForGroup as $did) {
+                    try {
+                        mark_synced_item($pdo, 'batch_donation', (string)$did, ['batch_id' => $batchId]);
+                    } catch (Throwable $e) {
+                        $errors[] = 'Error marking batch donation ' . $did . ' synced: ' . $e->getMessage();
+                    }
+                }
+            }
         } catch (Throwable $e) {
             $batchHadErrors = true;
             $errors[] = 'Error creating QBO Deposit for batch ' . $batchId .

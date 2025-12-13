@@ -9,6 +9,16 @@ require_once __DIR__ . '/../src/SyncService.php';
 require_once __DIR__ . '/../src/Auth.php';
 Auth::requireLogin();
 
+function get_synced_items(PDO $pdo, string $type): array {
+    $stmt = $pdo->prepare('SELECT item_id FROM synced_items WHERE item_type = :t');
+    $stmt->execute([':t' => $type]);
+    $ids = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $ids[] = (string)$row['item_id'];
+    }
+    return $ids;
+}
+
 function get_display_timezone(PDO $pdo): DateTimeZone {
     $tz = null;
     try {
@@ -57,7 +67,8 @@ if ($days < 1) {
 $nowUtc   = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 $sinceUtc = $nowUtc->sub(new DateInterval('P' . $days . 'D'));
 
-$preview = $service->buildDepositPreview($sinceUtc, $nowUtc);
+$syncedDonations = get_synced_items($pdo, 'stripe_donation');
+$preview = $service->buildDepositPreview($sinceUtc, $nowUtc, $syncedDonations);
 ?>
 <!DOCTYPE html>
 <html lang="en">
