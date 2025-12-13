@@ -68,7 +68,9 @@ $nowUtc   = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 $sinceUtc = $nowUtc->sub(new DateInterval('P' . $days . 'D'));
 
 $syncedDonations = get_synced_items($pdo, 'stripe_donation');
-$preview = $service->buildDepositPreview($sinceUtc, $nowUtc, $syncedDonations);
+$syncedRefunds   = get_synced_items($pdo, 'stripe_refund');
+$preview         = $service->buildDepositPreview($sinceUtc, $nowUtc, $syncedDonations);
+$refundPreview   = $service->buildRefundPreview($sinceUtc, $nowUtc, $syncedRefunds);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -345,6 +347,14 @@ $preview = $service->buildDepositPreview($sinceUtc, $nowUtc, $syncedDonations);
                 <div class="label">Net (expected payout)</div>
                 <div class="value">$<?= number_format($preview['total_net'], 2) ?></div>
             </div>
+            <div class="metric">
+                <div class="label">Pending refunds (count)</div>
+                <div class="value"><?= count($refundPreview['refunds']) ?></div>
+            </div>
+            <div class="metric">
+                <div class="label">Pending refunds (total)</div>
+                <div class="value">$<?= number_format($refundPreview['total_refund'], 2) ?></div>
+            </div>
         </div>
     </div>
 
@@ -455,6 +465,63 @@ $preview = $service->buildDepositPreview($sinceUtc, $nowUtc, $syncedDonations);
                     </tbody>
                 </table>
             </div>
+        </div>
+    <?php endif; ?>
+
+    <?php if (!empty($refundPreview['refunds'])): ?>
+        <div class="card">
+            <div class="section-header">
+                <div>
+                    <p class="section-title">Pending refunds</p>
+                    <p class="section-sub">Refunds in this window that would post as expenses in QBO.</p>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>Donation ID</th>
+                        <th>Updated at</th>
+                        <th>Payment method</th>
+                        <th>Refund total</th>
+                        <th>Lines</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($refundPreview['refunds'] as $row): ?>
+                        <?php
+                            $lineSum = 0.0;
+                            foreach ($row['lines'] as $ln) { $lineSum += (float)$ln['amount']; }
+                        ?>
+                        <tr>
+                            <td><?= htmlspecialchars((string)$row['donation_id'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= htmlspecialchars(fmt($row['updated_at'], $displayTz), ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><?= htmlspecialchars((string)($row['payment_method'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td>
+                            <td>$<?= number_format($lineSum, 2) ?></td>
+                            <td>
+                                <?php foreach ($row['lines'] as $ln): ?>
+                                    <div class="small">
+                                        <?= htmlspecialchars($ln['fund_name'] ?? ('Fund ' . ($ln['fund_id'] ?? '')), ENT_QUOTES, 'UTF-8') ?> |
+                                        Class: <?= htmlspecialchars((string)($ln['qbo_class_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?> |
+                                        Location: <?= htmlspecialchars((string)($ln['qbo_location_name'] ?? ''), ENT_QUOTES, 'UTF-8') ?> |
+                                        $<?= number_format((float)$ln['amount'], 2) ?>
+                                    </div>
+                                <?php endforeach; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                    <tfoot>
+                    <tr>
+                        <th colspan="3">Totals</th>
+                        <th>$<?= number_format($refundPreview['total_refund'], 2) ?></th>
+                        <th></th>
+                    </tr>
+                    </tfoot>
+                </table>
+            </div>
+            <p class="muted">Refunds already synced are excluded. Total pending refunds: <?= count($refundPreview['refunds']) ?>.</p>
+            <p class="muted">Already processed refunds (all time): <?= count($syncedRefunds) ?>.</p>
         </div>
     <?php endif; ?>
 
