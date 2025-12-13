@@ -805,7 +805,7 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
             <div class="muted">
                 Refunds created: <?= (int)$refundsCreated ?> (<?= '$' . number_format($refundTotal, 2) ?>)
                 <?php if (!empty($refundCreatedIds)): ?>
-                    — Reg IDs: <?= htmlspecialchars(implode(', ', $refundCreatedIds), ENT_QUOTES, 'UTF-8') ?>
+                    ? Reg IDs: <?= htmlspecialchars(implode(', ', $refundCreatedIds), ENT_QUOTES, 'UTF-8') ?>
                 <?php endif; ?>
             </div>
         </div>
@@ -841,7 +841,7 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
 
     <p><a href="index.php">&larr; Back to dashboard</a></p>
     <div class="footer">
-        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard ? <a href="help.php">Help</a>
     </div>
 </div>
 </body>

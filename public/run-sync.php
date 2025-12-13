@@ -1145,7 +1145,7 @@ if (!empty($errors)): ?>
 </div>
 
 <div class="footer">
-    &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+    &copy; <?= date('Y') ?> Rev. Tommy Sheppard ? <a href="help.php">Help</a>
 </div>
 
 <?php

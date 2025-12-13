@@ -463,7 +463,7 @@ $preview = $service->buildDepositPreview($sinceUtc, $nowUtc, $syncedDonations);
         one income line and one fee line per fund into your configured bank account, using the mapped Class and Location.
     </p>
     <div class="footer">
-        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard ? <a href="help.php">Help</a>
     </div>
 </div>
 </body>
