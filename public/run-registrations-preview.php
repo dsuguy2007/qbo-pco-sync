@@ -460,11 +460,11 @@ try {
             </form>
         </div>
 
-        <div class="metrics-grid">
-            <div class="metric">
-                <div class="label">Window start (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
-                <div class="value"><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
-            </div>
+<div class="metrics-grid">
+    <div class="metric">
+        <div class="label">Window start (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
+        <div class="value"><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
+    </div>
             <div class="metric">
                 <div class="label">Window end (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
                 <div class="value"><?= htmlspecialchars(fmt_dt($nowUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
@@ -485,15 +485,19 @@ try {
                 <div class="label">Total net</div>
                 <div class="value">$<?= number_format($grossTotal - $feeTotal, 2) ?></div>
             </div>
-            <div class="metric">
-                <div class="label">Refunds pending</div>
-                <div class="value"><?= count($refundsPreview) ?></div>
-            </div>
-            <div class="metric">
-                <div class="label">Refund total</div>
-                <div class="value">$<?= number_format($refundTotal, 2) ?></div>
-            </div>
-        </div>
+    <div class="metric">
+        <div class="label">Refunds pending</div>
+        <div class="value"><?= count($refundsPreview) ?></div>
+    </div>
+    <div class="metric">
+        <div class="label">Refund total</div>
+        <div class="value">$<?= number_format($refundTotal, 2) ?></div>
+    </div>
+    <div class="metric">
+        <div class="label">Already processed refunds</div>
+        <div class="value"><?= count($syncedRefundMap) ?></div>
+    </div>
+</div>
     </div>
 
     <?php if ($error): ?>
@@ -589,6 +593,7 @@ try {
                     </tfoot>
                 </table>
             </div>
+            <p class="muted">Refunds already processed are excluded. Total pending: <?= count($refundsPreview) ?>.</p>
         </div>
     <?php endif; ?>
 
