@@ -112,6 +112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!file_exists($envPath)) {
             throw new RuntimeException('config/.env not found; please run setup or create it before saving SMTP settings.');
         }
+        $action = $_POST['action'] ?? 'save';
         // Notifications
         $notificationEmail = isset($_POST['notification_email'])
             ? trim((string)$_POST['notification_email'])
@@ -204,7 +205,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         save_env_pairs($envPath, $envPairs);
 
-        $message = 'Settings saved successfully.';
+        if ($action === 'save_and_test_mail') {
+            require_once __DIR__ . '/../src/Mailer.php';
+            $mailer = new Mailer($mailFrom, [
+                'smtp_host'       => $smtpHost,
+                'smtp_port'       => $smtpPort,
+                'smtp_user'       => $smtpUser,
+                'smtp_pass'       => $smtpPass,
+                'smtp_encryption' => $smtpEnc,
+            ]);
+            $target = $notificationEmail ?: ($mailFrom ?: $smtpUser);
+            if (!$target) {
+                throw new RuntimeException('No notification email or from address available to send test.');
+            }
+            $mailer->send($target, 'SMTP test from qbo-pco-sync', "Test email sent at " . date('c') . "\nMode: " . ($smtpHost !== '' ? 'SMTP' : 'mail()'));
+            $message = 'Settings saved and test email sent to ' . htmlspecialchars($target, ENT_QUOTES, 'UTF-8') . '.';
+        } else {
+            $message = 'Settings saved successfully.';
+        }
     } catch (Throwable $e) {
         $error = 'Error saving settings: ' . $e->getMessage();
     }
@@ -639,6 +657,10 @@ $lastBatchDisplay      = format_display_time($lastBatchCompletedAt, $displayTime
             <div class="hint">
                 Leave host blank to fall back to PHP <code>mail()</code> (less reliable). For DreamHost use host <code>smtp.dreamhost.com</code>,
                 port <code>587</code>, encryption <code>tls</code>, and your mailbox username/password.
+            </div>
+            <div class="field" style="margin-top:0.6rem;">
+                <button type="submit" name="action" value="save_and_test_mail" class="btn secondary">Save and send test email</button>
+                <div class="hint">Saves settings above, then sends a test to the notification email.</div>
             </div>
         </div>
 
