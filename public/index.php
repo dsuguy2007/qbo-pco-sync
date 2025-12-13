@@ -50,6 +50,7 @@ if (!empty($_GET['qbo_error'])) {
 // ---------------------------------------------------------------
 $qboConnected = false;
 $qboStatusText = 'Not yet connected to QuickBooks.';
+$qboExpiresInMinutes = null;
 
 try {
     $stmt = $pdo->query("SELECT * FROM qbo_tokens ORDER BY id DESC LIMIT 1");
@@ -72,6 +73,7 @@ try {
         if ($expiresAt && $expiresAt > $now) {
             $qboConnected  = true;
             $qboStatusText = 'Connected to QuickBooks (realm ' . htmlspecialchars($realmId, ENT_QUOTES, 'UTF-8') . ').';
+            $qboExpiresInMinutes = max(0, (int)round(($expiresAt->getTimestamp() - $now->getTimestamp()) / 60));
         } else {
             // We have a row but token is expired or can't parse date
             $qboStatusText = 'QuickBooks token has expired or is invalid. Please reconnect.';
@@ -97,8 +99,11 @@ try {
         $pcoStatusText = 'Missing PCO app_id or secret in config.';
     }
 } catch (Throwable $e) {
-    $pcoStatusText = 'Error initializing PCO client: ' . $e->getMessage();
+        $pcoStatusText = 'Error initializing PCO client: ' . $e->getMessage();
 }
+
+// Composer/vendor presence
+$composerMissing = !file_exists(__DIR__ . '/../vendor/autoload.php');
 
 // ---------------------------------------------------------------
 // Optional: notification email from sync_settings (if present)
@@ -162,6 +167,23 @@ foreach (['stripe' => 'Stripe donations', 'batch' => 'Committed batches', 'regis
     $s = $syncSummaries[$k] ?? null;
     if ($s && isset($s['status']) && in_array($s['status'], ['error', 'partial'], true)) {
         $healthAlerts[] = $label . ' last run status: ' . strtoupper((string)$s['status']);
+    }
+}
+
+// Mail health (last send)
+$mailStatus = null;
+$mailStatusText = 'No recent mail sends logged.';
+$mailStatusFile = __DIR__ . '/../logs/mail-status.json';
+if (file_exists($mailStatusFile)) {
+    $raw = @file_get_contents($mailStatusFile);
+    $decoded = $raw ? json_decode($raw, true) : null;
+    if (is_array($decoded)) {
+        $mailStatus = $decoded;
+        $mailStatusText = strtoupper((string)($decoded['status'] ?? 'unknown')) .
+            ' @ ' . htmlspecialchars((string)($decoded['ts'] ?? ''), ENT_QUOTES, 'UTF-8');
+        if (!empty($decoded['error'])) {
+            $mailStatusText .= ' (Error: ' . htmlspecialchars((string)$decoded['error'], ENT_QUOTES, 'UTF-8') . ')';
+        }
     }
 }
 
@@ -463,6 +485,9 @@ foreach (['stripe' => 'Stripe donations', 'batch' => 'Committed batches', 'regis
                 <div class="pill <?= $qboConnected ? 'ok' : 'warn' ?>">
                     <?= $qboConnected ? 'Connected' : 'Needs attention' ?>
                 </div>
+                <?php if ($qboConnected && $qboExpiresInMinutes !== null): ?>
+                    <div class="small">Token expires in ~<?= (int)$qboExpiresInMinutes ?> minutes.</div>
+                <?php endif; ?>
             </div>
             <div class="card status">
                 <div class="label">Planning Center</div>
@@ -478,6 +503,20 @@ foreach (['stripe' => 'Stripe donations', 'batch' => 'Committed batches', 'regis
                     <div class="pill info">Active</div>
                 </div>
             <?php endif; ?>
+            <div class="card status">
+                <div class="label">Mail status</div>
+                <div class="value"><?= htmlspecialchars($mailStatusText, ENT_QUOTES, 'UTF-8') ?></div>
+                <div class="pill <?= ($mailStatus && str_contains($mailStatus['status'] ?? '', 'success')) ? 'ok' : 'warn' ?>">
+                    <?= ($mailStatus && str_contains($mailStatus['status'] ?? '', 'success')) ? 'OK' : 'Check' ?>
+                </div>
+            </div>
+            <div class="card status">
+                <div class="label">Composer / vendor</div>
+                <div class="value"><?= $composerMissing ? 'vendor/autoload.php missing (run composer install)' : 'Dependencies present' ?></div>
+                <div class="pill <?= $composerMissing ? 'warn' : 'ok' ?>">
+                    <?= $composerMissing ? 'Needs action' : 'Ready' ?>
+                </div>
+            </div>
         </div>
 
         <?php if (!empty($configWarnings)): ?>

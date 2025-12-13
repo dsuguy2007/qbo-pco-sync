@@ -9,6 +9,7 @@ class Mailer
     private string $from;
     private string $logFile;
     private array $smtp;
+    private string $statusFile;
 
     public function __construct(?string $from = null, array $smtpConfig = [])
     {
@@ -21,6 +22,8 @@ class Mailer
 
         // Log file in the app root: /qbo-pco-sync/mail-debug.log
         $this->logFile = dirname(__DIR__) . '/mail-debug.log';
+        $this->statusFile = dirname(__DIR__) . '/logs/mail-status.json';
+        $this->ensureDir(dirname($this->statusFile));
 
         // Normalize SMTP settings (all optional)
         $this->smtp = [
@@ -46,6 +49,7 @@ class Mailer
         $sent = false;
         $status = 'not_sent';
         $errorMsg = null;
+        $mode = $this->smtp['host'] !== '' ? 'smtp' : 'mail';
 
         if ($this->smtp['host'] !== '') {
             $autoload = dirname(__DIR__) . '/vendor/autoload.php';
@@ -98,5 +102,30 @@ class Mailer
         }
         $resultLines[] = str_repeat('-', 60);
         @file_put_contents($this->logFile, implode("\n", $resultLines) . "\n", FILE_APPEND);
+
+        $this->writeStatus([
+            'ts'     => date('c'),
+            'to'     => $to,
+            'mode'   => $mode,
+            'status' => $status,
+            'error'  => $errorMsg,
+        ]);
+    }
+
+    private function ensureDir(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+    }
+
+    private function writeStatus(array $payload): void
+    {
+        $this->ensureDir(dirname($this->statusFile));
+        $json = json_encode($payload);
+        if ($json === false) {
+            return;
+        }
+        @file_put_contents($this->statusFile, $json);
     }
 }
