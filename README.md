@@ -61,7 +61,7 @@ Bridge Planning Center Giving data (Stripe payouts, committed batches, and Regis
 - **Webhook (optional)**: PCO `giving.v2.events.batch.created` can trigger registrations sync via shared secret in `webhook_secrets`.
 
 ## Email
-- SMTP recommended (DreamHost: host `smtp.dreamhost.com`, port `587`, encryption `tls`, auth with your mailbox). Set in `.env` via setup.
+- SMTP recommended. Set in `.env` via setup.
 - PHPMailer loads from `vendor/autoload.php`; if missing, run `composer install`.
 - If SMTP host is empty, Mailer falls back to PHP `mail()` (less reliable).
 
