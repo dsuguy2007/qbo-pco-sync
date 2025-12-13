@@ -99,7 +99,49 @@ try {
         $pcoStatusText = 'Missing PCO app_id or secret in config.';
     }
 } catch (Throwable $e) {
-        $pcoStatusText = 'Error initializing PCO client: ' . $e->getMessage();
+    $pcoStatusText = 'Error initializing PCO client: ' . $e->getMessage();
+}
+
+$mappingStats = null;
+if ($pcoConnected) {
+    try {
+        // Fetch PCO funds and existing mappings to calculate completeness.
+        $funds = $pcoClient->listFunds();
+        $totalFunds = is_array($funds) ? count($funds) : 0;
+        $stmt = $pdo->query("SELECT * FROM fund_mappings");
+        $maps = [];
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $maps[(string)$row['pco_fund_id']] = $row;
+        }
+        $unmapped = 0;
+        $missingClass = 0;
+        $missingLocation = 0;
+        foreach ($funds as $f) {
+            $fid = (string)($f['id'] ?? '');
+            if ($fid === '') { continue; }
+            if (!isset($maps[$fid])) {
+                $unmapped++;
+                continue;
+            }
+            $m = $maps[$fid];
+            if (trim((string)($m['qbo_class_name'] ?? '')) === '') {
+                $missingClass++;
+            }
+            if (trim((string)($m['qbo_location_name'] ?? '')) === '') {
+                $missingLocation++;
+            }
+        }
+        $mapped = $totalFunds - $unmapped;
+        $mappingStats = [
+            'total'           => $totalFunds,
+            'mapped'          => max(0, $mapped),
+            'unmapped'        => $unmapped,
+            'missing_class'   => $missingClass,
+            'missing_location'=> $missingLocation,
+        ];
+    } catch (Throwable $e) {
+        $mappingStats = null;
+    }
 }
 
 // Composer/vendor presence
@@ -496,6 +538,37 @@ if (file_exists($mailStatusFile)) {
                     <?= $pcoConnected ? 'Configured' : 'Not ready' ?>
                 </div>
             </div>
+            <?php if ($mappingStats !== null): ?>
+                <?php
+                    $totalFunds      = max(0, (int)($mappingStats['total'] ?? 0));
+                    $mappedFunds     = max(0, (int)($mappingStats['mapped'] ?? 0));
+                    $unmappedFunds   = max(0, (int)($mappingStats['unmapped'] ?? 0));
+                    $missingClass    = max(0, (int)($mappingStats['missing_class'] ?? 0));
+                    $missingLocation = max(0, (int)($mappingStats['missing_location'] ?? 0));
+                    $issues          = $unmappedFunds + $missingClass + $missingLocation;
+                    $pct             = $totalFunds > 0 ? (int)round(($mappedFunds / $totalFunds) * 100) : 0;
+                    $pillClass       = $totalFunds === 0 ? 'warn' : ($issues === 0 ? 'ok' : 'warn');
+                    $pillLabel       = $totalFunds === 0 ? 'No funds' : ($issues === 0 ? 'Complete' : 'Needs mapping');
+                ?>
+                <div class="card status">
+                    <div class="label">Fund mapping health</div>
+                    <div class="value">
+                        <?php if ($totalFunds === 0): ?>
+                            No PCO funds returned
+                        <?php else: ?>
+                            <?= $mappedFunds ?>/<?= $totalFunds ?> mapped (<?= $pct ?>%)
+                        <?php endif; ?>
+                    </div>
+                    <div class="pill <?= $pillClass ?>"><?= $pillLabel ?></div>
+                    <div class="small">
+                        <?php if ($issues === 0 && $totalFunds > 0): ?>
+                            All funds have class and location mappings.
+                        <?php else: ?>
+                            Unmapped: <?= $unmappedFunds ?> | Missing class: <?= $missingClass ?> | Missing location: <?= $missingLocation ?>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
             <?php if ($notificationEmail): ?>
                 <div class="card status">
                     <div class="label">Notification Email</div>
