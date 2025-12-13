@@ -1,70 +1,74 @@
 # QuickBooks ↔ Planning Center Sync
 
-Bridge Planning Center Giving data (Stripe payouts and committed batches) into QuickBooks Online. Includes a small PHP dashboard to connect credentials, preview data, run syncs, and review logs.
+Bridge Planning Center Giving data (Stripe payouts, committed batches, and Registrations) into QuickBooks Online. Includes a PHP dashboard to connect credentials, preview data, run syncs, and review logs.
 
 ## What it does
 - Connects to QuickBooks Online via OAuth and stores refresh/access tokens.
-- Pulls Stripe-based online donations from PCO and books them as QBO Deposits (income + fee lines).
-- Syncs committed PCO Giving batches (cash/check) to QBO Deposits.
-- Manages fund → class/location mappings, notification email, and recent sync logs.
+- Stripe online donations → QBO Deposits (income + fee lines) grouped by fund/class/location; payment method refs set when available.
+- PCO Giving committed batches (cash/check) → QBO Deposits grouped by location; per-payment-method deposit lines.
+- PCO Registrations payments → QBO Deposits; refunds → QBO expenses using configured refund account.
+- Previews for Stripe, batches, and registrations show only unsynced items (per-item tracking in `synced_items`). Refunds dedupe by fingerprint.
+- Fund ↔ Class/Location mappings, notification email, and run logs.
+- Optional webhook trigger for registrations via `giving.v2.events.batch.created`.
 
 ## Requirements
-- PHP 8.1+ with PDO MySQL, cURL, and OpenSSL extensions.
-- MySQL 8 (or compatible) database.
-- An Intuit Developer account with a QuickBooks app (OAuth 2.0).
-- A Planning Center personal access token (client id + secret).
+- PHP 8.1+ with PDO MySQL, cURL, and OpenSSL.
+- MySQL 8 (or compatible).
+- Composer (for PHPMailer SMTP support).
+- Intuit Developer account with a QuickBooks app (OAuth 2.0).
+- Planning Center personal access token (client id + secret).
+- Web server pointing to `public/` (Apache/nginx or `php -S localhost:8000 -t public` for local testing).
 
-## Setup
-1) **Clone and install dependencies**
-   - This app is plain PHP; no extra composer/npm deps are required.
+## Install and configure
+1) **Clone and dependencies**
+   - `git clone https://github.com/dsuguy2007/qbo-pco-sync.git`
+   - `cd qbo-pco-sync`
+   - Run `composer install` to pull PHPMailer (needed for SMTP email). Ensure `vendor/autoload.php` exists before production use.
 
-2) **Create and configure the database**
-   - Create a MySQL schema and user with read/write privileges.
-   - Run `sql/schema.sql` against your database:
+2) **Database**
+   - Create a MySQL schema and user with read/write.
+   - Initialize tables:
      ```sh
      mysql -u YOURUSER -p YOURDB < sql/schema.sql
      ```
 
-3) **Configure environment**
-   - Copy `config/config.php` (or edit directly) and set:
-     - `db`: host, name, user, pass.
-     - `qbo`: `client_id`, `client_secret`, `redirect_uri`, and account names (deposit, income, fee). Redirect URI should point to `https://your-host/public/oauth-callback.php`.
-     - `pco`: `app_id` and `secret` (your PCO personal access token client id/secret).
-     - `mail.from` (optional): default “from” address for notification emails.
+3) **Run setup wizard**
+   - Visit `public/setup.php` (or `setup.php?force=1` to rerun).
+   - Enter DB creds, QBO keys, PCO PAT (app id/secret), webhook secrets, app base URL, notification email, and SMTP settings (DreamHost: host `smtp.dreamhost.com`, port `587`, encryption `tls`, user/pass = your mailbox).
+   - The wizard writes `config/.env`, generates `config/config.php`, and initializes the DB.
+   - If `vendor/autoload.php` is missing, the wizard shows a reminder to run `composer install`.
 
-4) **Set up Intuit (QuickBooks) OAuth**
-   - In <https://developer.intuit.com>, create an app (QuickBooks Online).
-   - Add an OAuth redirect URI pointing to your deployment of `public/oauth-callback.php`.
-   - Grab the client ID/secret and place them in `config/config.php`.
-   - In production, use the production keys and redirect URIs; in dev/sandbox, use the sandbox keys.
+4) **QuickBooks OAuth**
+   - In <https://developer.intuit.com>, create a QBO app.
+   - Add redirect URI: `https://your-host/qbo-pco-sync/public/oauth-callback.php`.
+   - Put client ID/secret/environment in setup; then click “Connect QuickBooks” in the dashboard to authorize.
 
-5) **Set up Planning Center access**
-   - Create a personal access token in Planning Center (Developer Tools).
-   - Use the client id as `pco.app_id` and the client secret as `pco.secret` in `config/config.php`.
+5) **Planning Center**
+   - Create a personal access token in PCO.
+   - Use the PAT client id/secret for `PCO_APP_ID` / `PCO_SECRET`.
 
-6) **Create an admin user**
-   - Visit `public/create_admin.php` in your browser to create the first admin user.
+6) **Web server**
+   - Serve `public/` as the document root. Ensure PHP can write to `config/` and `logs/`.
 
-7) **Run the app**
-   - Point your web server (or `php -S localhost:8000 -t public`) to the `public` directory.
-   - Login, connect QuickBooks, and verify PCO configuration.
+## Usage
+- **Dashboard**: `index.php` shows connection status and links to previews/syncs.
+- **Stripe (online donations)**: preview `run-sync-preview.php`; sync `run-sync.php` (supports `reset_window`/`backfill_days`).
+- **Committed batches (cash/check)**: preview `run-batch-preview.php`; sync `run-batch-sync.php`.
+- **Registrations**: preview `run-registrations-preview.php`; sync `run-registrations-sync.php`. Refunds post as expenses to the configured refund account (or income fallback) with class/department applied.
+- **Fund mappings**: `fund-mapping.php` maps PCO fund → QBO Class/Location.
+- **Settings**: `settings.php` for account names, notification email, refund account, and display timezone.
+- **Logs**: `logs.php` for recent sync runs.
+- **Webhook (optional)**: PCO `giving.v2.events.batch.created` can trigger registrations sync via shared secret in `webhook_secrets`.
 
-8) **Webhooks & scheduling**
-   - Add per-event `webhook_secrets` to `config/config.php`; set them to the PCO webhook `authenticity_secret` values.
-   - Point PCO webhooks to `public/pco-webhook.php`; it verifies the `X-PCO-Webhooks-Authenticity` HMAC header (using any configured secret) and routes batch commits and donation completions.
-   - Webhooks do not currently cover Registrations; schedule `run-registrations-sync.php?webhook_secret=ONE_OF_YOUR_SECRETS` via cron/task runner to pull recent Registrations payments (the secret must match one of the values in `webhook_secrets`).
+## Email
+- SMTP recommended (DreamHost: host `smtp.dreamhost.com`, port `587`, encryption `tls`, auth with your mailbox). Set in `.env` via setup.
+- PHPMailer loads from `vendor/autoload.php`; if missing, run `composer install`.
+- If SMTP host is empty, Mailer falls back to PHP `mail()` (less reliable).
 
-## Usage highlights
-- **Connect QuickBooks**: `oauth-start.php` handles the OAuth flow and stores tokens.
-- **Preview online donations**: `run-sync-preview.php` shows Stripe payouts windowed by `completed_at`.
-- **Run online sync**: `run-sync.php` pushes Stripe payouts to QBO deposits with class/location mapping.
-- **Batch preview**: `run-batch-preview.php` shows committed batches (cash/check) and fund totals.
-- **Run batch sync**: `run-batch-sync.php` books committed batches into QBO deposits.
-- **Registrations preview**: `run-registrations-preview.php` shows PCO Registrations payments (poll-only; webhooks unavailable).
-- **Run registrations sync**: `run-registrations-sync.php` books Registrations payments into QBO deposits (schedule or trigger via secret).
-- **Fund mappings**: `fund-mapping.php` maps PCO funds to QBO Class/Location.
-- **Settings**: `settings.php` manages account names and notification email.
-- **Logs**: `logs.php` lists recent sync runs and supports cleanup.
+## Data safety and idempotency
+- `synced_items` tracks processed donations/refunds/payments to prevent duplicates across reruns.
+- `synced_deposits` retains legacy fingerprints for idempotency.
+- Previews show only unsynced items by default.
 
 ## License
 
@@ -76,4 +80,4 @@ This project is source-available and **non-commercial**.
 - You may not sell this software or offer it as a paid hosted service
   without my written permission.
 
-If you are interested in commercial use, please contact me via email at tdsheppard77@gmail.com
+For commercial use inquiries, contact tdsheppard77@gmail.com.
