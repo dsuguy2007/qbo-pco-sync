@@ -41,6 +41,7 @@ class QboClient
         }
 
         $this->retryLog = dirname(__DIR__) . '/logs/api-retries.log';
+        $this->ensureLogDir($this->retryLog);
     }
 
     private function loadLatestTokenRow(): ?array
@@ -252,6 +253,14 @@ class QboClient
             $url
         );
         @file_put_contents($this->retryLog, $line, FILE_APPEND | LOCK_EX);
+    }
+
+    private function ensureLogDir(string $filePath): void
+    {
+        $dir = dirname($filePath);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
     }
 
     private function query(string $sql): array

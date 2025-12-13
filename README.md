@@ -34,7 +34,7 @@ Bridge Planning Center Giving data (Stripe payouts, committed batches, and Regis
 
 3) **Run setup wizard**
    - Visit `public/setup.php` (or `setup.php?force=1` to rerun).
-   - Enter DB creds, QBO keys, PCO PAT (app id/secret), webhook secrets, app base URL, notification email, and SMTP settings (DreamHost: host `smtp.dreamhost.com`, port `587`, encryption `tls`, user/pass = your mailbox).
+   - Enter DB creds, QBO keys, PCO PAT (app id/secret), webhook secrets, app base URL, notification email, and SMTP settings.
    - The wizard writes `config/.env`, generates `config/config.php`, and initializes the DB.
    - If `vendor/autoload.php` is missing, the wizard shows a reminder to run `composer install`.
 

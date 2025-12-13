@@ -168,6 +168,9 @@ foreach ($urls as $url) {
 
 // Append webhook activity log
 $logFile = __DIR__ . '/../logs/webhooks.log';
+if (!is_dir(dirname($logFile))) {
+    @mkdir(dirname($logFile), 0775, true);
+}
 @file_put_contents($logFile, implode("\n", $logLines) . "\n", FILE_APPEND | LOCK_EX);
 
 http_response_code(202);

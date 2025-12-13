@@ -22,6 +22,7 @@ class PcoClient
         $this->appId   = $config['pco']['app_id'];
         $this->secret  = $config['pco']['secret'];
         $this->retryLog = dirname(__DIR__) . '/logs/api-retries.log';
+        $this->ensureLogDir($this->retryLog);
     }
 
     /**
@@ -138,6 +139,14 @@ class PcoClient
             $url
         );
         @file_put_contents($this->retryLog, $line, FILE_APPEND | LOCK_EX);
+    }
+
+    private function ensureLogDir(string $filePath): void
+    {
+        $dir = dirname($filePath);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
     }
 
     /**
