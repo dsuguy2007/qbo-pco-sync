@@ -433,7 +433,10 @@ $lastBatchDisplay      = format_display_time($lastBatchCompletedAt, $displayTime
             letter-spacing: -0.01em;
         }
         .field input[type="text"],
-        .field input[type="email"] {
+        .field input[type="email"],
+        .field input[type="number"],
+        .field input[type="password"],
+        .field input[type="url"] {
             width: 100%;
             max-width: 520px;
             padding: 0.65rem 0.75rem;
