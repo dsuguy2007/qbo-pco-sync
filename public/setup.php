@@ -68,6 +68,7 @@ $defaults = [
 $values = $defaults;
 $errors = [];
 $setupComplete = false;
+$composerMissing = !file_exists(__DIR__ . '/../vendor/autoload.php');
 
 function posted_value(string $key, array $defaults): string
 {
@@ -306,19 +307,26 @@ PHP;
     <h1>First-time setup</h1>
     <p class="lede">Provide your database, QuickBooks, and PCO credentials. We'll generate <code>config/.env</code>, create the database (and tables), and let you create the first admin user.</p>
 
-    <?php if (!empty($errors)): ?>
-        <div class="error-box">
-            <?php foreach ($errors as $err): ?>
-                <div><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></div>
-            <?php endforeach; ?>
-        </div>
-    <?php endif; ?>
+<?php if (!empty($errors)): ?>
+    <div class="error-box">
+        <?php foreach ($errors as $err): ?>
+            <div><?= htmlspecialchars($err, ENT_QUOTES, 'UTF-8') ?></div>
+        <?php endforeach; ?>
+    </div>
+<?php endif; ?>
 
-    <?php if ($setupComplete): ?>
-        <div class="success-box">
-            Setup complete. <strong>config/.env</strong> was written and the database was initialized.
-            You can now <a href="login.php">log in</a> and create the first admin user.
-        </div>
+<?php if ($composerMissing): ?>
+    <div class="error-box">
+        <div><strong>PHPMailer not installed.</strong></div>
+        <div>Run <code>composer install</code> in the project root to download dependencies (needed for SMTP email).</div>
+    </div>
+<?php endif; ?>
+
+<?php if ($setupComplete): ?>
+    <div class="success-box">
+        Setup complete. <strong>config/.env</strong> was written and the database was initialized.
+        You can now <a href="login.php">log in</a> and create the first admin user.
+    </div>
     <?php endif; ?>
 
     <?php if (!$setupComplete): ?>
