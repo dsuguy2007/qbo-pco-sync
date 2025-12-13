@@ -99,8 +99,8 @@ function trigger_sync(string $url): array
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 3,
-            CURLOPT_CONNECTTIMEOUT => 2,
+            CURLOPT_TIMEOUT        => 1.5,
+            CURLOPT_CONNECTTIMEOUT => 1,
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_HTTPHEADER     => ['User-Agent: PCO-Webhook-Relay'],
             CURLOPT_SSL_VERIFYPEER => false, // loopback/self-signed safe for internal call
@@ -124,7 +124,7 @@ function trigger_sync(string $url): array
     $ctx = stream_context_create([
         'http' => [
             'method'  => 'GET',
-            'timeout' => 3,
+            'timeout' => 1.5,
             'header'  => "User-Agent: PCO-Webhook-Relay\r\n",
         ],
     ]);
@@ -147,23 +147,74 @@ function trigger_sync(string $url): array
 
 $hadError = false;
 $logLines = [];
-foreach ($urls as $url) {
-    $triggerResult = trigger_sync($url);
-    if (!$triggerResult['ok']) {
-        $hadError = true;
-        $msg = '[pco-webhook] Failed to trigger sync endpoint: ' . $url .
-            ' code=' . ($triggerResult['code'] ?? 0) .
-            ' err=' . ($triggerResult['error'] ?? 'n/a');
-        error_log($msg);
+
+// If curl_multi is available, fire all URLs in parallel to finish faster than webhook timeout.
+if (function_exists('curl_multi_init') && function_exists('curl_init')) {
+    $mh = curl_multi_init();
+    $handles = [];
+    foreach ($urls as $url) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 1.5,
+            CURLOPT_CONNECTTIMEOUT => 1,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_HTTPHEADER     => ['User-Agent: PCO-Webhook-Relay'],
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
+        ]);
+        $handles[$url] = $ch;
+        curl_multi_add_handle($mh, $ch);
     }
-    $logLines[] = sprintf(
-        '[%s] type=%s url=%s code=%s err=%s',
-        (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c'),
-        $type,
-        $url,
-        $triggerResult['code'] ?? 'n/a',
-        $triggerResult['error'] ?? ''
-    );
+
+    $running = null;
+    do {
+        curl_multi_exec($mh, $running);
+        curl_multi_select($mh, 0.2);
+    } while ($running > 0);
+
+    foreach ($handles as $url => $ch) {
+        $body  = curl_multi_getcontent($ch);
+        $code  = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $errno = curl_errno($ch);
+        $err   = $errno ? curl_error($ch) : '';
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+
+        $ok = ($errno === 0 && $code >= 200 && $code < 500);
+        if (!$ok) {
+            $hadError = true;
+            error_log('[pco-webhook] Failed to trigger sync endpoint: ' . $url . ' code=' . $code . ' err=' . ($err ?: 'n/a'));
+        }
+        $logLines[] = sprintf(
+            '[%s] type=%s url=%s code=%s err=%s',
+            (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c'),
+            $type,
+            $url,
+            $code ?: 'n/a',
+            $err ?? ''
+        );
+    }
+    curl_multi_close($mh);
+} else {
+    foreach ($urls as $url) {
+        $triggerResult = trigger_sync($url);
+        if (!$triggerResult['ok']) {
+            $hadError = true;
+            $msg = '[pco-webhook] Failed to trigger sync endpoint: ' . $url .
+                ' code=' . ($triggerResult['code'] ?? 0) .
+                ' err=' . ($triggerResult['error'] ?? 'n/a');
+            error_log($msg);
+        }
+        $logLines[] = sprintf(
+            '[%s] type=%s url=%s code=%s err=%s',
+            (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c'),
+            $type,
+            $url,
+            $triggerResult['code'] ?? 'n/a',
+            $triggerResult['error'] ?? ''
+        );
+    }
 }
 
 // Append webhook activity log
