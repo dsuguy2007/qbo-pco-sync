@@ -58,6 +58,11 @@ $defaults = [
     'APP_BASE_URL'                 => 'https://your-host/qbo-pco-sync/public',
     'APP_NOTIFICATION_EMAIL'       => '',
     'MAIL_FROM'                    => '',
+    'MAIL_SMTP_HOST'               => 'smtp.dreamhost.com',
+    'MAIL_SMTP_PORT'               => '587',
+    'MAIL_SMTP_USER'               => '',
+    'MAIL_SMTP_PASS'               => '',
+    'MAIL_SMTP_ENCRYPTION'         => 'tls',
 ];
 
 $values = $defaults;
@@ -185,7 +190,12 @@ return [
         'notification_email' => env_or_default('APP_NOTIFICATION_EMAIL', ''),
     ],
     'mail' => [
-        'from' => env_or_default('MAIL_FROM', ''),
+        'from'            => env_or_default('MAIL_FROM', ''),
+        'smtp_host'       => env_or_default('MAIL_SMTP_HOST', ''),
+        'smtp_port'       => (int)env_or_default('MAIL_SMTP_PORT', 587),
+        'smtp_user'       => env_or_default('MAIL_SMTP_USER', ''),
+        'smtp_pass'       => env_or_default('MAIL_SMTP_PASS', ''),
+        'smtp_encryption' => env_or_default('MAIL_SMTP_ENCRYPTION', 'tls'),
     ],
 ];
 PHP;
@@ -417,6 +427,30 @@ PHP;
                     <div>
                         <label for="MAIL_FROM">Mail from</label>
                         <input id="MAIL_FROM" name="MAIL_FROM" type="email" value="<?= htmlspecialchars($values['MAIL_FROM'], ENT_QUOTES, 'UTF-8') ?>" required>
+                    </div>
+                </div>
+                <div class="section-title">SMTP (recommended)</div>
+                <p class="muted">Use your DreamHost mailbox for reliable delivery. Leave blank to fall back to PHP <code>mail()</code> (not recommended).</p>
+                <div class="grid">
+                    <div>
+                        <label for="MAIL_SMTP_HOST">SMTP host</label>
+                        <input id="MAIL_SMTP_HOST" name="MAIL_SMTP_HOST" type="text" value="<?= htmlspecialchars($values['MAIL_SMTP_HOST'], ENT_QUOTES, 'UTF-8') ?>" placeholder="smtp.dreamhost.com">
+                    </div>
+                    <div>
+                        <label for="MAIL_SMTP_PORT">SMTP port</label>
+                        <input id="MAIL_SMTP_PORT" name="MAIL_SMTP_PORT" type="number" value="<?= htmlspecialchars($values['MAIL_SMTP_PORT'], ENT_QUOTES, 'UTF-8') ?>" placeholder="587">
+                    </div>
+                    <div>
+                        <label for="MAIL_SMTP_ENCRYPTION">Encryption (tls/ssl)</label>
+                        <input id="MAIL_SMTP_ENCRYPTION" name="MAIL_SMTP_ENCRYPTION" type="text" value="<?= htmlspecialchars($values['MAIL_SMTP_ENCRYPTION'], ENT_QUOTES, 'UTF-8') ?>" placeholder="tls">
+                    </div>
+                    <div>
+                        <label for="MAIL_SMTP_USER">SMTP username</label>
+                        <input id="MAIL_SMTP_USER" name="MAIL_SMTP_USER" type="text" value="<?= htmlspecialchars($values['MAIL_SMTP_USER'], ENT_QUOTES, 'UTF-8') ?>" placeholder="you@your-domain.com">
+                    </div>
+                    <div>
+                        <label for="MAIL_SMTP_PASS">SMTP password</label>
+                        <input id="MAIL_SMTP_PASS" name="MAIL_SMTP_PASS" type="password" value="<?= htmlspecialchars($values['MAIL_SMTP_PASS'], ENT_QUOTES, 'UTF-8') ?>">
                     </div>
                 </div>
             </div>
