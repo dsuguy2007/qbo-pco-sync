@@ -1,0 +1,8 @@
+{
+    "name": "trinity/qbo-pco-sync",
+    "description": "Planning Center to QuickBooks sync utility.",
+    "type": "project",
+    "require": {
+        "phpmailer/phpmailer": "^6.9"
+    }
+}

@@ -1179,7 +1179,7 @@ finish_log($logger, $logId, $status, $summary, $details);
 $notificationEmail = get_setting($pdo, 'notification_email');
 if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
     $from   = $config['mail']['from'] ?? null;
-    $mailer = new Mailer($from);
+    $mailer = new Mailer($from, $config['mail'] ?? []);
     $subject = '[PCO->QBO] Stripe sync ' . strtoupper($status);
     $bodyLines = [
         'Stripe sync run on ' . $nowUtc->format('Y-m-d H:i:s T'),

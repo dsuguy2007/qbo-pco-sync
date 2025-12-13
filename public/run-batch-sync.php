@@ -424,7 +424,7 @@ function send_sync_email_if_needed(
     }
 
     $from   = $config['mail']['from'] ?? null;
-    $mailer = new Mailer($from);
+    $mailer = new Mailer($from, $config['mail'] ?? []);
 
     $nowUtc  = new DateTimeImmutable('now', new DateTimeZone('UTC'));
     $subject = "[PCO->QBO] {$syncLabel} sync " . strtoupper($status);
@@ -1147,7 +1147,7 @@ $logger->finish($logId, $status, $summary, $details);
 $notificationEmail = get_setting($pdo, 'notification_email');
 if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
     $from   = $config['mail']['from'] ?? null;
-    $mailer = new Mailer($from);
+    $mailer = new Mailer($from, $config['mail'] ?? []);
 
     $subject = '[PCO->QBO] Batch sync ' . strtoupper($status);
     $bodyLines = [

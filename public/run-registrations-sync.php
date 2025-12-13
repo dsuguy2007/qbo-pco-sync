@@ -720,7 +720,7 @@ set_setting($pdo, 'last_registrations_sync_summary', json_encode($summaryData));
 
 if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
     $from   = $config['mail']['from'] ?? null;
-    $mailer = new Mailer($from);
+    $mailer = new Mailer($from, $config['mail'] ?? []);
     $subject = '[PCO->QBO] Registrations sync ' . strtoupper($status);
     $bodyLines = [
         'Registrations sync run on ' . $nowUtc->format('Y-m-d H:i:s T'),
