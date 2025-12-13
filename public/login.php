@@ -210,7 +210,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($errors)) {
         <a class="small-link" href="logout.php">Need to switch accounts? Log out.</a>
     <?php endif; ?>
     <div class="footer">
-        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard ? <a href="help.php">Help</a>
     </div>
 </div>
 </body>

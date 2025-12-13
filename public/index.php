@@ -602,7 +602,7 @@ foreach (['stripe' => 'Stripe donations', 'batch' => 'Committed batches', 'regis
                 ?>
                 <div>
                     <strong><?= $label ?></strong>
-                    <span class="muted">— <?= $statusTxt ?> @ <?= $ts ?></span>
+                    <span class="muted">? <?= $statusTxt ?> @ <?= $ts ?></span>
                 </div>
                 <?php endforeach; ?>
                 <?php if (empty(array_filter($syncSummaries))): ?>
@@ -631,7 +631,7 @@ foreach (['stripe' => 'Stripe donations', 'batch' => 'Committed batches', 'regis
             This dashboard helps trigger manual PCO Stripe payout syncs, review logs, adjust fund mapping, and keep notifications flowing.
         </p>
         <div class="footer">
-            &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+            &copy; <?= date('Y') ?> Rev. Tommy Sheppard ? <a href="help.php">Help</a>
         </div>
     </div>
 </div>

@@ -314,7 +314,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <a class="nav-link" href="index.php">&larr; Back to dashboard</a>
     </div>
     <div class="footer">
-        &copy; <?= date('Y') ?> Rev. Tommy Sheppard • <a href="help.php">Help</a>
+        &copy; <?= date('Y') ?> Rev. Tommy Sheppard ? <a href="help.php">Help</a>
     </div>
 </div>
 </body>
