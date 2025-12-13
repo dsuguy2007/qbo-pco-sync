@@ -640,6 +640,12 @@ if (empty($pcoConfig['app_id']) || empty($pcoConfig['secret'])) {
 $errors          = [];
 $createdDeposits = [];
 $totalDonations  = 0;
+$skipStats = [
+    'batches_total'           => 0,
+    'batches_skipped_already' => 0,
+    'donations_already_synced'=> 0,
+    'deposits_skipped_no_lines'=> 0,
+];
 
 try {
     $qbo = new QboClient($pdo, $config);
@@ -811,6 +817,7 @@ try {
 }
 
 $batchSummaries = [];
+$skipStats['batches_total'] = is_countable($batches) ? count($batches) : 0;
 
 foreach ($batches as $batchInfo) {
     $batchId     = $batchInfo['id'];
@@ -834,6 +841,8 @@ foreach ($batches as $batchInfo) {
     }
 
     if ($batchAlreadySynced) {
+        $skipStats['batches_skipped_already']++;
+        $skipStats['donations_already_synced'] += is_countable($donations) ? count($donations) : 0;
         foreach ($donations as $donation) {
             $donationId = (string)($donation['id'] ?? '');
             if ($donationId === '') {
@@ -859,6 +868,7 @@ foreach ($batches as $batchInfo) {
         $totalDonations++;
         $donationId = (string)($donation['id'] ?? '');
         if ($donationId !== '' && in_array($donationId, $syncedBatchDonations ?? [], true)) {
+            $skipStats['donations_already_synced']++;
             continue;
         }
         $designations    = $donation['designations'] ?? [];
@@ -1031,6 +1041,7 @@ foreach ($batches as $batchInfo) {
         }
 
         if (empty($lines)) {
+            $skipStats['deposits_skipped_no_lines']++;
             $errors[] = "No lines built for batch {$batchId} / Location '" . ($locName ?: '(no location)') . "', skipping deposit.";
             continue;
         }
@@ -1135,6 +1146,15 @@ $summaryData = [
         'since' => $sinceUtc->format(DateTimeInterface::ATOM),
         'until' => $windowEnd->format(DateTimeInterface::ATOM),
     ],
+    'totals' => [
+        'batches_seen'     => $skipStats['batches_total'],
+        'donations_seen'   => $totalDonations,
+    ],
+    'skipped' => [
+        'batches_already_synced'   => $skipStats['batches_skipped_already'],
+        'donations_already_synced' => $skipStats['donations_already_synced'],
+        'deposits_skipped_no_lines'=> $skipStats['deposits_skipped_no_lines'],
+    ],
     'payment_method_lines_total' => $pmStats['lines'],
     'payment_method_lines_with_ref' => $pmStats['with_ref'],
     'payment_method_multi_method'   => $pmStats['multi'],
@@ -1214,6 +1234,14 @@ ob_start();
             <div class="value"><?= count($createdDeposits) ?></div>
         </div>
         <div class="metric">
+            <div class="label">Batches skipped (already synced)</div>
+            <div class="value"><?= (int)$skipStats['batches_skipped_already'] ?></div>
+        </div>
+        <div class="metric">
+            <div class="label">Donations skipped (already synced)</div>
+            <div class="value"><?= (int)$skipStats['donations_already_synced'] ?></div>
+        </div>
+        <div class="metric">
             <div class="label">Window start (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
             <div class="value"><?= htmlspecialchars(fmt_dt($sinceUtc, $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
         </div>
@@ -1222,6 +1250,11 @@ ob_start();
             <div class="value"><?= htmlspecialchars(fmt_dt($windowEnd, $displayTz), ENT_QUOTES, 'UTF-8') ?></div>
         </div>
     </div>
+    <?php if ($skipStats['deposits_skipped_no_lines'] > 0): ?>
+        <p class="muted" style="margin-top:0.6rem;">
+            Deposits skipped because no lines were built: <?= (int)$skipStats['deposits_skipped_no_lines'] ?>.
+        </p>
+    <?php endif; ?>
 </div>
 
 <div class="card">

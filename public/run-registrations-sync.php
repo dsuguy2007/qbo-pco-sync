@@ -419,6 +419,11 @@ $refundTotal = 0.0;
 $refundCreatedIds = [];
 $pmStats    = ['lines' => 0, 'with_ref' => 0, 'missing' => 0];
 $missingPmIds = [];
+$runStats = [
+    'payments_seen'           => 0,
+    'payments_skipped_synced' => 0,
+    'deposit_skipped'         => false,
+];
 
 foreach ($payments as $pay) {
     $attrs  = $pay['attributes'] ?? [];
@@ -439,7 +444,9 @@ foreach ($payments as $pay) {
     if ($occurredAtDt < $sinceUtc || $occurredAtDt > $nowUtc) { continue; }
 
     $id     = (string)($pay['id'] ?? '');
+    $runStats['payments_seen']++;
     if ($id !== '' && in_array($id, $syncedPayments ?? [], true)) {
+        $runStats['payments_skipped_synced']++;
         continue;
     }
 
@@ -672,6 +679,7 @@ if (!empty($lines)) {
     ]));
 
     $depositAlreadySynced = has_synced_deposit($pdo, 'registrations', $fingerprint);
+    $runStats['deposit_skipped'] = $depositAlreadySynced;
 
     try {
         if (!$depositAlreadySynced) {
@@ -709,6 +717,13 @@ $summaryData = [
     'window'    => [
         'since' => $sinceUtc->format(DateTimeInterface::ATOM),
         'until' => $nowUtc->format(DateTimeInterface::ATOM),
+    ],
+    'totals' => [
+        'payments_seen' => $runStats['payments_seen'],
+    ],
+    'skipped' => [
+        'payments_already_synced'    => $runStats['payments_skipped_synced'],
+        'deposit_skipped_idempotent' => $runStats['deposit_skipped'],
     ],
     'payment_method_lines_total' => $pmStats['lines'],
     'payment_method_lines_with_ref' => $pmStats['with_ref'],
@@ -801,13 +816,24 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
 <?php else: ?>
     <div class="flash success">
         <div>
-            <div><strong><?= $depositResult ? 'Deposit processed.' : 'No deposits were created.' ?></strong></div>
+            <div><strong>
+                <?php if ($depositResult): ?>
+                    Deposit processed.
+                <?php elseif ($runStats['deposit_skipped']): ?>
+                    Deposit skipped (already synced for this window).
+                <?php else: ?>
+                    No deposits were created.
+                <?php endif; ?>
+            </strong></div>
             <div class="muted">
                 Refunds created: <?= (int)$refundsCreated ?> (<?= '$' . number_format($refundTotal, 2) ?>)
                 <?php if (!empty($refundCreatedIds)): ?>
                     ? Reg IDs: <?= htmlspecialchars(implode(', ', $refundCreatedIds), ENT_QUOTES, 'UTF-8') ?>
                 <?php endif; ?>
             </div>
+            <?php if ($runStats['payments_skipped_synced'] > 0): ?>
+                <div class="muted">Payments already synced and skipped: <?= (int)$runStats['payments_skipped_synced'] ?>.</div>
+            <?php endif; ?>
         </div>
     </div>
 <?php endif; ?>
@@ -828,12 +854,15 @@ if ($notificationEmail && in_array($status, ['error', 'partial'], true)) {
         </p>
         <table>
             <tr><th>Payments processed</th><td><?= count($processedIds) ?></td></tr>
+            <tr><th>Payments skipped (already synced)</th><td><?= (int)$runStats['payments_skipped_synced'] ?></td></tr>
             <tr><th>Gross</th><td>$<?= number_format($grossTotal, 2) ?></td></tr>
             <tr><th>Fees</th><td>$<?= number_format($feeTotal, 2) ?></td></tr>
             <tr><th>Net</th><td>$<?= number_format($grossTotal - $feeTotal, 2) ?></td></tr>
             <tr><th>Refunds created</th><td><?= (int)$refundsCreated ?> ($<?= number_format($refundTotal, 2) ?>)</td></tr>
                 <?php if ($depositResult): ?>
                     <tr><th>QBO Deposit Id</th><td><?= htmlspecialchars((string)($depositResult['Id'] ?? ''), ENT_QUOTES, 'UTF-8') ?></td></tr>
+                <?php elseif ($runStats['deposit_skipped']): ?>
+                    <tr><th>Deposit</th><td>Skipped (already synced for this window)</td></tr>
                 <?php endif; ?>
             </table>
         </div>

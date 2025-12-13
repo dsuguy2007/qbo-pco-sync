@@ -163,8 +163,8 @@ class QboClient
     {
         $this->ensureAccessToken();
         $attempts   = 0;
-        $maxTries   = 3;
-        $delay      = 1;
+        $maxTries   = 4;
+        $baseDelay  = 1.0; // seconds
         $lastErrMsg = null;
         $lastStatus = null;
         $lastBody   = null;
@@ -246,14 +246,14 @@ class QboClient
                 }
             }
 
-            // Retry on 429/5xx or network errors
-            if ($status === 429 || ($status >= 500 && $status < 600) || $responseBody === false) {
-                if ($attempts < $maxTries) {
-                    sleep($delay);
-                    $delay *= 2;
-                    $this->logRetry('qbo', $status, $attempts, $url);
-                    continue;
-                }
+            // Retry on 429/5xx or network errors with backoff + jitter
+            $shouldRetry = ($status === 429 || ($status >= 500 && $status < 600) || $responseBody === false);
+            if ($shouldRetry && $attempts < $maxTries) {
+                $sleepSeconds = $baseDelay * (2 ** ($attempts - 1));
+                $sleepSeconds += mt_rand(0, 300) / 1000; // add up to 300ms jitter
+                $this->logRetry('qbo', $status ?? -1, $attempts, $url);
+                usleep((int)round($sleepSeconds * 1_000_000));
+                continue;
             }
             break;
         }
