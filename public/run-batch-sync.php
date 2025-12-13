@@ -447,41 +447,82 @@ function send_sync_email_if_needed(
 function pco_request(array $pcoConfig, string $path, array $query = []): array
 {
     $baseUrl = rtrim($pcoConfig['base_url'] ?? 'https://api.planningcenteronline.com', '/');
-    $url     = $baseUrl . $path;
+    $attempts = 0;
+    $maxTries = 3;
+    $baseDelay = 1.0;
+    $lastErr = null;
 
-    if (!empty($query)) {
-        $url .= '?' . http_build_query($query);
-    }
+    while ($attempts < $maxTries) {
+        $attempts++;
 
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 30,
-        CURLOPT_HTTPAUTH       => CURLAUTH_BASIC,
-        CURLOPT_USERPWD        => $pcoConfig['app_id'] . ':' . $pcoConfig['secret'],
-        CURLOPT_HTTPHEADER     => ['Accept: application/json'],
-    ]);
+        $url = str_starts_with($path, 'http') ? $path : $baseUrl . $path;
+        if (!empty($query)) {
+            $url .= (str_contains($url, '?') ? '&' : '?') . http_build_query($query);
+        }
 
-    $body = curl_exec($ch);
-    if ($body === false) {
-        $err = curl_error($ch);
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_HTTPAUTH       => CURLAUTH_BASIC,
+            CURLOPT_USERPWD        => $pcoConfig['app_id'] . ':' . $pcoConfig['secret'],
+            CURLOPT_HTTPHEADER     => ['Accept: application/json'],
+        ]);
+
+        $body   = curl_exec($ch);
+        $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err    = curl_error($ch);
         curl_close($ch);
-        throw new RuntimeException('Error calling PCO: ' . $err);
+
+        if ($body === false) {
+            $lastErr = 'Error calling PCO: ' . $err;
+        } else {
+            $shouldRetry = ($status === 429 || ($status >= 500 && $status < 600));
+            if ($status >= 200 && $status < 300) {
+                $decoded = json_decode($body, true);
+                if (!is_array($decoded)) {
+                    $lastErr = 'PCO JSON decode error: ' . json_last_error_msg() . ' | Raw body: ' . $body;
+                } else {
+                    return $decoded;
+                }
+            } elseif ($shouldRetry) {
+                $lastErr = 'PCO HTTP error ' . $status . ': ' . $body;
+            } else {
+                throw new RuntimeException('PCO HTTP error ' . $status . ': ' . $body);
+            }
+        }
+
+        if ($attempts < $maxTries) {
+            $sleep = $baseDelay * (2 ** ($attempts - 1)) + mt_rand(0, 300) / 1000;
+            usleep((int)round($sleep * 1_000_000));
+            continue;
+        }
     }
 
-    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    throw new RuntimeException($lastErr ?? 'Unknown PCO error');
+}
 
-    if ($status < 200 || $status >= 300) {
-        throw new RuntimeException('PCO HTTP error ' . $status . ': ' . $body);
+function pco_paginated_data(array $pcoConfig, string $path, array $query = []): array
+{
+    $data = [];
+    $nextPath   = $path;
+    $nextParams = $query;
+
+    while ($nextPath !== null) {
+        $resp = pco_request($pcoConfig, $nextPath, $nextParams);
+        if (isset($resp['data']) && is_array($resp['data'])) {
+            $data = array_merge($data, $resp['data']);
+        }
+        $links = $resp['links'] ?? [];
+        if (!empty($links['next'])) {
+            $nextPath   = $links['next'];
+            $nextParams = [];
+        } else {
+            $nextPath = null;
+        }
     }
 
-    $decoded = json_decode($body, true);
-    if (!is_array($decoded)) {
-        throw new RuntimeException('PCO JSON decode error: ' . json_last_error_msg() . ' | Raw body: ' . $body);
-    }
-
-    return $decoded;
+    return $data;
 }
 
 function get_committed_batches(
@@ -489,7 +530,7 @@ function get_committed_batches(
     DateTimeImmutable $windowStart,
     DateTimeImmutable $windowEnd
 ): array {
-    $resp = pco_request(
+    $batchData = pco_paginated_data(
         $pcoConfig,
         '/giving/v2/batches',
         [
@@ -500,7 +541,7 @@ function get_committed_batches(
 
     $batches = [];
 
-    foreach ($resp['data'] ?? [] as $batch) {
+    foreach ($batchData as $batch) {
         $attrs        = $batch['attributes'] ?? [];
         $committedStr = $attrs['committed_at'] ?? null;
         if (!$committedStr) {
@@ -530,7 +571,7 @@ function get_committed_batches(
 
 function get_batch_donations(array $pcoConfig, string $batchId): array
 {
-    $resp = pco_request(
+    $donData = pco_paginated_data(
         $pcoConfig,
         '/giving/v2/batches/' . rawurlencode($batchId) . '/donations',
         [
@@ -540,7 +581,7 @@ function get_batch_donations(array $pcoConfig, string $batchId): array
 
     $donations = [];
 
-    foreach ($resp['data'] ?? [] as $don) {
+    foreach ($donData as $don) {
         $id    = (string)($don['id'] ?? '');
         $attrs = $don['attributes'] ?? [];
 
@@ -553,16 +594,15 @@ function get_batch_donations(array $pcoConfig, string $batchId): array
             continue;
         }
 
-        $desResp = pco_request(
+        $designations = [];
+        $desRespData = pco_paginated_data(
             $pcoConfig,
             '/giving/v2/donations/' . rawurlencode($id) . '/designations',
             [
                 'per_page' => 100,
             ]
         );
-
-        $designations = [];
-        foreach ($desResp['data'] ?? [] as $des) {
+        foreach ($desRespData as $des) {
             $dAttrs = $des['attributes'] ?? [];
             $rels   = $des['relationships'] ?? [];
             $fund   = $rels['fund']['data'] ?? null;
@@ -639,7 +679,8 @@ if (empty($pcoConfig['app_id']) || empty($pcoConfig['secret'])) {
 
 $errors          = [];
 $createdDeposits = [];
-$totalDonations  = 0;
+$totalDonationsSeen = 0;
+$totalDonationsProcessed = 0;
 $skipStats = [
     'batches_total'           => 0,
     'batches_skipped_already' => 0,
@@ -865,12 +906,13 @@ foreach ($batches as $batchInfo) {
     }
 
     foreach ($donations as $donation) {
-        $totalDonations++;
+        $totalDonationsSeen++;
         $donationId = (string)($donation['id'] ?? '');
         if ($donationId !== '' && in_array($donationId, $syncedBatchDonations ?? [], true)) {
             $skipStats['donations_already_synced']++;
             continue;
         }
+        $totalDonationsProcessed++;
         $designations    = $donation['designations'] ?? [];
         $paymentMethod   = $donation['payment_method'] ?? '';
         $locKeysUsed     = [];
@@ -1134,7 +1176,7 @@ if (empty($errors)) {
 
 $summary = sprintf(
     'Batch: processed %d donations; created %d deposits.',
-    (int)$totalDonations,
+    (int)$totalDonationsProcessed,
     count($createdDeposits)
 );
 $details = empty($errors) ? null : implode("\n", $errors);
@@ -1147,8 +1189,9 @@ $summaryData = [
         'until' => $windowEnd->format(DateTimeInterface::ATOM),
     ],
     'totals' => [
-        'batches_seen'     => $skipStats['batches_total'],
-        'donations_seen'   => $totalDonations,
+        'batches_seen'       => $skipStats['batches_total'],
+        'donations_seen'     => $totalDonationsSeen,
+        'donations_processed'=> $totalDonationsProcessed,
     ],
     'skipped' => [
         'batches_already_synced'   => $skipStats['batches_skipped_already'],
@@ -1227,7 +1270,7 @@ ob_start();
     <div class="metrics-grid">
         <div class="metric">
             <div class="label">Donations processed (cash/check)</div>
-            <div class="value"><?= (int)$totalDonations ?></div>
+            <div class="value"><?= (int)$totalDonationsProcessed ?></div>
         </div>
         <div class="metric">
             <div class="label">Deposits created</div>
@@ -1240,6 +1283,10 @@ ob_start();
         <div class="metric">
             <div class="label">Donations skipped (already synced)</div>
             <div class="value"><?= (int)$skipStats['donations_already_synced'] ?></div>
+        </div>
+        <div class="metric">
+            <div class="label">Donations seen in window</div>
+            <div class="value"><?= (int)$totalDonationsSeen ?></div>
         </div>
         <div class="metric">
             <div class="label">Window start (<?= htmlspecialchars($displayTz->getName(), ENT_QUOTES, 'UTF-8') ?>)</div>
