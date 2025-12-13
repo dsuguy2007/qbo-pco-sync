@@ -856,7 +856,8 @@ if (empty($errors)) {
 
             if ($fee !== 0.0) {
                 $feeLine = [
-                    'Amount'     => round($fee, 2),
+                    // QBO Deposit fee lines must be negative
+                    'Amount'     => round($fee * -1, 2),
                     'DetailType' => 'DepositLineDetail',
                     'DepositLineDetail' => [
                         'AccountRef' => [
