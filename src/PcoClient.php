@@ -182,8 +182,31 @@ class PcoClient
      */
     public function listDonations(array $query = []): array
     {
-        $path = '/giving/v2/donations';
-        return $this->request('GET', $path, $query);
+        $donations = [];
+        $included  = [];
+        $path      = '/giving/v2/donations';
+        $params    = $query;
+
+        while ($path !== null) {
+            $resp = $this->request('GET', $path, $params);
+
+            if (isset($resp['data']) && is_array($resp['data'])) {
+                $donations = array_merge($donations, $resp['data']);
+            }
+            if (isset($resp['included']) && is_array($resp['included'])) {
+                $included = array_merge($included, $resp['included']);
+            }
+
+            $links = $resp['links'] ?? [];
+            if (!empty($links['next'])) {
+                $path   = $links['next']; // full URL handled by request()
+                $params = [];             // next already carries query
+            } else {
+                $path = null;
+            }
+        }
+
+        return ['data' => $donations, 'included' => $included];
     }
 
     /**
