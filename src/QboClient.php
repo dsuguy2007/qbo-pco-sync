@@ -17,6 +17,7 @@ class QboClient
     private array $deptCache    = [];
     private array $paymentMethodCache = [];
     private string $retryLog;
+    private string $jsonLog;
 
     public function __construct(PDO $pdo, array $config)
     {
@@ -42,6 +43,7 @@ class QboClient
 
         $this->retryLog = dirname(__DIR__) . '/logs/api-retries.log';
         $this->ensureLogDir($this->retryLog);
+        $this->jsonLog  = dirname(__DIR__) . '/logs/api-requests.jsonl';
     }
 
     private function loadLatestTokenRow(): ?array
@@ -164,6 +166,9 @@ class QboClient
         $maxTries   = 3;
         $delay      = 1;
         $lastErrMsg = null;
+        $lastStatus = null;
+        $lastBody   = null;
+        $startedAt  = microtime(true);
 
         while ($attempts < $maxTries) {
             $attempts++;
@@ -204,6 +209,8 @@ class QboClient
             $status       = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $err          = curl_error($ch);
             curl_close($ch);
+            $lastStatus = $status;
+            $lastBody   = $responseBody;
 
             if ($responseBody === false) {
                 $lastErrMsg = 'QBO cURL error: ' . $err;
@@ -222,7 +229,19 @@ class QboClient
                     $lastErrMsg = 'QBO JSON decode error: ' . json_last_error_msg() . ' | Raw: ' . substr($responseBody, 0, 500);
                 } elseif ($status >= 400) {
                     $lastErrMsg = 'QBO API error HTTP ' . $status . ': ' . $responseBody;
+                    $this->logJson('qbo_api_error', [
+                        'url'     => $url,
+                        'status'  => $status,
+                        'body'    => $responseBody,
+                        'attempt' => $attempts,
+                    ]);
                 } else {
+                    $this->logJson('qbo_api_ok', [
+                        'url'     => $url,
+                        'status'  => $status,
+                        'attempt' => $attempts,
+                        'ms'      => (int)round((microtime(true) - $startedAt) * 1000),
+                    ]);
                     return $decoded;
                 }
             }
@@ -239,6 +258,13 @@ class QboClient
             break;
         }
 
+        $this->logJson('qbo_api_fail', [
+            'url'     => $path,
+            'status'  => $lastStatus,
+            'body'    => $lastBody,
+            'error'   => $lastErrMsg,
+            'ms'      => (int)round((microtime(true) - $startedAt) * 1000),
+        ]);
         throw new RuntimeException($lastErrMsg ?? 'Unknown QBO error');
     }
 
@@ -260,6 +286,17 @@ class QboClient
         $dir = dirname($filePath);
         if (!is_dir($dir)) {
             @mkdir($dir, 0775, true);
+        }
+    }
+
+    private function logJson(string $event, array $payload): void
+    {
+        $this->ensureLogDir($this->jsonLog);
+        $payload['ts'] = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('c');
+        $payload['event'] = $event;
+        $json = json_encode($payload);
+        if ($json !== false) {
+            @file_put_contents($this->jsonLog, $json . "\n", FILE_APPEND | LOCK_EX);
         }
     }
 

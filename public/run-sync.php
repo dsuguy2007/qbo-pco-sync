@@ -586,6 +586,7 @@ $displayTz = get_display_timezone($pdo);
 // --- Determine sync window ---------------------------------------------------
 
 $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+$dryRun = isset($_GET['dry_run']) && $_GET['dry_run'] === '1';
 $lastSyncStr  = get_setting($pdo, 'last_completed_at');
 $backfillDays = isset($_GET['backfill_days']) ? max(1, min(90, (int)$_GET['backfill_days'])) : 7;
 $resetWindow  = isset($_GET['reset_window']) && $_GET['reset_window'] === '1';
@@ -714,6 +715,7 @@ if (empty($preview['funds']) && empty($refundPreview['refunds'])) {
 $errors          = [];
 $createdDeposits = [];
 $createdRefunds  = [];
+$alreadySyncedDonations = 0;
 
 $depositBankName      = $config['qbo']['stripe_deposit_bank'] ?? 'TRINITY 2000 CHECKING';
 $weeklyIncomeName     = $config['qbo']['stripe_income_account'] ?? 'OPERATING INCOME:WEEKLY OFFERINGS:PLEDGES';
@@ -907,10 +909,21 @@ if (empty($errors)) {
             'deposit'       => null,
             'skipped'       => true,
         ];
-        // Ensure items are marked so previews skip them next time.
         foreach ($group['donation_ids'] as $did) {
             mark_synced_item($pdo, 'stripe_donation', (string)$did);
         }
+        continue;
+    }
+
+    if ($dryRun) {
+        $createdDeposits[] = [
+            'location_name' => $locName,
+            'total_gross'   => $group['total_gross'],
+            'total_fee'     => $group['total_fee'],
+            'total_net'     => $group['total_net'],
+            'deposit'       => ['DryRun' => true, 'Fingerprint' => $fingerprint, 'LineCount' => count($lines)],
+            'skipped'       => false,
+        ];
         continue;
     }
 
@@ -927,13 +940,13 @@ if (empty($errors)) {
             'location_name' => $locName,
             'total_gross'   => $group['total_gross'],
             'total_fee'     => $group['total_fee'],
-                'total_net'     => $group['total_net'],
-                'deposit'       => $dep,
-                'skipped'       => false,
-            ];
-        } catch (Throwable $e) {
-            $errors[] = 'Error creating QBO Deposit for Location ' . ($locName ?: '(no location)') . ': ' . $e->getMessage();
-        }
+            'total_net'     => $group['total_net'],
+            'deposit'       => $dep,
+            'skipped'       => false,
+        ];
+    } catch (Throwable $e) {
+        $errors[] = 'Error creating QBO Deposit for Location ' . ($locName ?: '(no location)') . ': ' . $e->getMessage();
+    }
     }
 }
 
